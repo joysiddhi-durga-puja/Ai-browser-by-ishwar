@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "AI Browser",
+    "slug": "ai-browser",
+    "version": "1.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.yourname.aibrowser",
+      "permissions": ["INTERNET"]
+    },
+    "ios": {
+      "bundleIdentifier": "com.yourname.aibrowser"
+    }
+  }
+}
