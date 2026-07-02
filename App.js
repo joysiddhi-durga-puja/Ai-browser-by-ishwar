@@ -19,7 +19,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 
 // ⚠️ Point this to your deployed backend (see api/ask.js in this project)
-const AI_ENDPOINT = 'https://your-vercel-app.vercel.app/api/ask';
+const AI_ENDPOINT = 'https://ai-browser-by-iswar.vercel.app/api/ask';
 
 const HOME_URL = 'https://www.google.com';
 const HISTORY_KEY = 'history_v1';
