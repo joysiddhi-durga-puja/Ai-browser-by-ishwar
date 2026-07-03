@@ -100,7 +100,6 @@ const MENU_ITEMS_DEF = [
 const AI_MODES = {
   ask: { hint: 'Thinking…' },
   explain: { hint: 'Explaining the page…' },
-  tldr: { hint: 'Summarizing…' },
 };
 
 // Builds the same style of prompt the backend (api/ask.js) uses, so a
@@ -124,18 +123,6 @@ function buildMessages(mode, question, pageContext, pageUrl) {
           'You scan web page text for FAQs, quiz questions, or form questions and answer each one. Respond ONLY with a JSON array like [{"question":"...","answer":"..."}]. No prose, no markdown fences.',
       },
       { role: 'user', content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}` },
-    ];
-  }
-  if (mode === 'tldr') {
-    return [
-      {
-        role: 'system',
-        content: 'You write extremely short TL;DR summaries of long web pages for a mobile reader, as 3-5 crisp bullet points, no preamble.',
-      },
-      {
-        role: 'user',
-        content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nGive a TL;DR summary as 3-5 short bullet points.`,
-      },
     ];
   }
   // ask
@@ -187,6 +174,7 @@ export default function App() {
   const [desktopMode, setDesktopMode] = useState(false);
   // Homepage — just a search box, no clutter
   const [homeSearchInput, setHomeSearchInput] = useState('');
+  const homeSearchInputRef = useRef(null);
   // When true, "Homepage" label is replaced by a focused URL/search input bar
   const [homeUrlBarActive, setHomeUrlBarActive] = useState(false);
   // Floating draggable "inspect" button — works anywhere, over any page
@@ -232,8 +220,6 @@ export default function App() {
   const webviewRefs = useRef({}); // { [tabId]: WebView ref }
   const viewShotRefs = useRef({}); // { [tabId]: View ref } — for tab preview thumbnails
   const progressAnim = useRef(new Animated.Value(0)).current;
-  // Floating "TL;DR" button — shown once the user scrolls deep into a long article
-  const [showTldrButton, setShowTldrButton] = useState(false);
   // Floating "Fill form" chip — shown automatically once a page with a form is detected.
   const [showFillFormButton, setShowFillFormButton] = useState(false);
 
@@ -420,7 +406,7 @@ export default function App() {
       }
 
       // Homepage + only tab left → confirm before exiting
-      Alert.alert('Exit AI Browser?', 'Kya aap app band karna chahte hain?', [
+      Alert.alert('Exit AI Browser?', 'Are you zure ?', [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Exit', style: 'destructive', onPress: () => BackHandler.exitApp() },
       ]);
@@ -494,7 +480,6 @@ export default function App() {
     // Snapshot the tab we're leaving so its grid preview stays fresh.
     if (activeTabId !== id) captureTabThumbnail(activeTabId);
     setActiveTabId(id);
-    setShowTldrButton(false);
     const tab = tabs.find((t) => t.id === id);
     if (tab) setUrlInput(tab.url === HOME_MARKER ? '' : tab.url);
     setShowTabSwitcher(false);
@@ -899,33 +884,6 @@ export default function App() {
 
   const [pendingAIAction, setPendingAIAction] = useState(null); // { mode, question } or null
 
-  // Watches scroll depth + document length. Once the reader is clearly deep into a
-  // long article (>25% scrolled, page taller than ~2.2 screens) it fires ONE message
-  // so we can surface a floating "TL;DR" button — cheap, no polling from the RN side.
-  const TLDR_WATCH_JS = `
-    (function() {
-      if (window.__tldrWatchInstalled) return true;
-      window.__tldrWatchInstalled = true;
-      var fired = false;
-      function check() {
-        if (fired) return;
-        var doc = document.documentElement;
-        var scrollHeight = Math.max(doc.scrollHeight || 0, document.body ? document.body.scrollHeight : 0);
-        var winH = window.innerHeight || 0;
-        if (scrollHeight < winH * 2.2) return; // not a "long" page
-        var scrolled = window.scrollY || doc.scrollTop || 0;
-        var pct = scrolled / Math.max(1, scrollHeight - winH);
-        if (pct > 0.25) {
-          fired = true;
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'SHOW_TLDR' }));
-        }
-      }
-      window.addEventListener('scroll', check, { passive: true });
-      check();
-    })();
-    true;
-  `;
-
   // Detects whether the current page has a fillable form (a real <form>, or at
   // least a couple of text-like inputs) so we can surface the "Fill form" chip
   // automatically — no manual button needed.
@@ -935,12 +893,6 @@ export default function App() {
       window.__formDetectInstalled = true;
       function check() {
         var hasForm = document.forms && document.forms.length > 0;
-        if (!hasForm) {
-          var inputs = document.querySelectorAll(
-            'input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input:not([type])'
-          );
-          hasForm = inputs.length >= 2;
-        }
         if (hasForm) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'FORM_DETECTED' }));
         }
@@ -963,9 +915,6 @@ export default function App() {
         await Clipboard.setStringAsync(data.text || '');
         Alert.alert('Copied ✅', 'Page text copied to clipboard.');
       }
-      if (data.type === 'SHOW_TLDR') {
-        setShowTldrButton(true);
-      }
       if (data.type === 'FORM_DETECTED') {
         setShowFillFormButton(true);
       }
@@ -979,19 +928,6 @@ export default function App() {
     } catch (e) {
       // ignore non-JSON messages
     }
-  };
-
-  // Tapping the floating TL;DR button — pulls fresh page text, then asks for a short summary.
-  const runTldr = () => {
-    setShowTldrButton(false);
-    if (!activeTab || activeTab.url === HOME_MARKER) return;
-    setAiMode('tldr');
-    setShowAIPanel(true);
-    setAiAnswer('');
-    setAiError(false);
-    setAiLoading(true);
-    setPendingAIAction({ mode: 'tldr', question: '' });
-    webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS);
   };
 
   // Auto-run mode (currently only 'explain') — extracts the page text first, then asks.
@@ -1137,12 +1073,13 @@ export default function App() {
             >
               <View style={[styles.homeScreen, nightMode && styles.homeScreenNight]}>
                 <View style={styles.homeHeaderRow}>
-                  <TouchableOpacity onPress={() => setHomeUrlBarActive(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <TouchableOpacity onPress={() => homeSearchInputRef.current?.focus()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                     <Text style={[styles.homeHeaderTitle, nightMode && styles.homeBrandNight]}>Homepage</Text>
                   </TouchableOpacity>
                 </View>
 
                 <View style={styles.homeCenterWrap}>
+                  <View style={{ flex: 3 }} />
                   {homeUrlBarActive ? (
                     <View style={[styles.homeUrlBar, nightMode && styles.homeUrlBarNight, { marginBottom: 0 }]}>
                       <Ionicons name="search-outline" size={20} color={nightMode ? '#aaa' : '#666'} />
@@ -1171,6 +1108,7 @@ export default function App() {
                   ) : (
                     <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
                       <TextInput
+                        ref={homeSearchInputRef}
                         style={[styles.homeSearchInputInner, nightMode && { color: '#fff' }]}
                         value={homeSearchInput}
                         onChangeText={setHomeSearchInput}
@@ -1186,6 +1124,7 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
                   )}
+                  <View style={{ flex: 7 }} />
                 </View>
               </View>
             </View>
@@ -1214,7 +1153,6 @@ export default function App() {
                 onLoadStart={() => {
                   updateTab(tab.id, { loading: true });
                   if (tab.id === activeTabId) {
-                    setShowTldrButton(false);
                     setShowFillFormButton(false);
                   }
                 }}
@@ -1227,8 +1165,6 @@ export default function App() {
                   if (nightMode && tab.id === activeTabId) {
                     webviewRefs.current[tab.id]?.injectJavaScript(buildNightModeJS(true));
                   }
-                  // Re-arm the TL;DR scroll watcher for the fresh page.
-                  webviewRefs.current[tab.id]?.injectJavaScript(TLDR_WATCH_JS);
                   webviewRefs.current[tab.id]?.injectJavaScript(FORM_DETECT_JS);
                 }}
                 onNavigationStateChange={(navState) => {
@@ -1269,10 +1205,10 @@ export default function App() {
         <Text style={styles.floatingBtnText}>🔍</Text>
       </Animated.View>
 
-      {/* Floating "TL;DR" chip — appears once the user has scrolled deep into a long article */}
+      {/* Floating "Fill form" chip — appears once a real <form> is detected on the page */}
       {showFillFormButton && (
         <TouchableOpacity
-          style={[styles.tldrChip, { bottom: showTldrButton ? 150 : 90 }]}
+          style={[styles.tldrChip, { bottom: 90 }]}
           onPress={() => {
             setShowFillFormButton(false);
             runAutofill();
@@ -1280,12 +1216,6 @@ export default function App() {
           activeOpacity={0.85}
         >
           <Text style={styles.tldrChipText}>📝 Fill form</Text>
-        </TouchableOpacity>
-      )}
-
-      {showTldrButton && (
-        <TouchableOpacity style={styles.tldrChip} onPress={runTldr} activeOpacity={0.85}>
-          <Text style={styles.tldrChipText}>⚡ TL;DR</Text>
         </TouchableOpacity>
       )}
 
@@ -1497,7 +1427,7 @@ export default function App() {
                 {[
                   { key: 'bookmarks', label: 'Bookmarks' },
                   { key: 'history', label: 'History' },
-                  { key: 'downloads', label: 'Saved pages' },
+                  { key: 'downloads', label: 'Downloads' },
                 ].map((t) => (
                   <TouchableOpacity key={t.key} onPress={() => switchLibraryTab(t.key)} style={{ marginLeft: 22 }}>
                     <Text
@@ -2181,7 +2111,7 @@ const styles = StyleSheet.create({
     marginBottom: 60,
   },
   homeHeaderTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
-  homeCenterWrap: { flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center' },
+  homeCenterWrap: { flex: 1, width: '100%', alignItems: 'center' },
   homeUrlBar: {
     flexDirection: 'row',
     alignItems: 'center',
