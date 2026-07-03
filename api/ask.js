@@ -11,7 +11,10 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'GROQ_API_KEY not configured on the server' });
   }
 
-  const { question = '', pageContext = '', pageUrl = '', mode = 'ask' } = req.body || {};
+  const { question = '', pageContext = '', pageUrl = '', mode = 'ask', model = '' } = req.body || {};
+  // Groq retired the old llama-3.x chat models, so default to a current one.
+  // The app's model switcher lets users pass any other valid Groq model ID here.
+  const selectedModel = (model && String(model).trim()) || 'openai/gpt-oss-20b';
 
   const trimmedContext = String(pageContext).slice(0, 6000);
 
@@ -40,6 +43,11 @@ Find any questions present in this text (FAQs, quiz questions, form questions, e
 Respond with ONLY valid JSON, no markdown, no extra text, in this exact format:
 [{"question":"...","answer":"concise answer"}]
 If no questions are found, respond with exactly: []`,
+
+    wa_reply: `You are drafting a short, casual WhatsApp reply on behalf of the phone's owner (chat: ${pageUrl || 'unknown'}).
+Incoming message(s):
+${trimmedContext || '(no text)'}
+Reply in 1-2 short sentences, matching the language/tone of the incoming message (Hindi/Hinglish/English). Output ONLY the reply text — no quotes, no labels, no explanation.`,
   };
 
   const systemPrompt = prompts[mode] || prompts.ask;
@@ -53,7 +61,7 @@ If no questions are found, respond with exactly: []`,
         Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: selectedModel,
         max_tokens: 800,
         temperature: 0.3,
         messages: [
