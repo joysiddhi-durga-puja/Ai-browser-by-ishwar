@@ -7,6 +7,7 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  ScrollView,
   Modal,
   ActivityIndicator,
   Platform,
@@ -21,6 +22,7 @@ import {
   StatusBar as RNStatusBar,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
@@ -64,6 +66,7 @@ const makeTab = (url = HOME_MARKER, opts = {}) => ({
 // Grid menu items shown when the hamburger (☰) button is tapped — Via-style bottom sheet.
 const MENU_ITEMS_DEF = [
   { key: 'night', icon: '🌙', label: 'Night mode' },
+  { key: 'reload', icon: '⟳', label: 'Reload' },
   { key: 'bookmarks', icon: '📑', label: 'Bookmarks' },
   { key: 'history', icon: '🕘', label: 'History' },
   { key: 'downloads', icon: '⬇️', label: 'Downloads' },
@@ -153,6 +156,8 @@ export default function App() {
   const [desktopMode, setDesktopMode] = useState(false);
   // Homepage — just a search box, no clutter
   const [homeSearchInput, setHomeSearchInput] = useState('');
+  // When true, "Homepage" label is replaced by a focused URL/search input bar
+  const [homeUrlBarActive, setHomeUrlBarActive] = useState(false);
   // Floating draggable "inspect" button — works anywhere, over any page
   const [showFloatingMenu, setShowFloatingMenu] = useState(false);
   const [showAIPanel, setShowAIPanel] = useState(false);
@@ -409,6 +414,7 @@ export default function App() {
     updateTab(activeTabId, { url: finalUrl, loading: true });
     setUrlInput(finalUrl);
     setHomeSearchInput('');
+    setHomeUrlBarActive(false);
   };
 
   // ---------- Night mode / Desktop site / Share (hamburger menu actions) ----------
@@ -754,32 +760,67 @@ export default function App() {
               style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
             >
               <View style={[styles.homeScreen, nightMode && styles.homeScreenNight]}>
-                <View style={styles.homeLogoWrap}>
-                  <Text
-                    style={[styles.homeBrand, nightMode && styles.homeBrandNight]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                  >
-                    AI Browser by Ishwar
-                  </Text>
-                </View>
+                {homeUrlBarActive ? (
+                  <View style={[styles.homeUrlBar, nightMode && styles.homeUrlBarNight]}>
+                    <Ionicons name="search-outline" size={20} color={nightMode ? '#aaa' : '#666'} />
+                    <TextInput
+                      autoFocus
+                      style={[styles.homeUrlBarInput, nightMode && styles.homeSearchInputNight]}
+                      value={homeSearchInput}
+                      onChangeText={setHomeSearchInput}
+                      onSubmitEditing={openHomeSearch}
+                      placeholder="Search or type a URL"
+                      placeholderTextColor="#9a9a9a"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="go"
+                    />
+                    <TouchableOpacity
+                      onPress={() => {
+                        setHomeUrlBarActive(false);
+                        setHomeSearchInput('');
+                      }}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Ionicons name="close" size={22} color={nightMode ? '#aaa' : '#666'} />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.homeHeaderRow}>
+                      <TouchableOpacity onPress={() => setHomeUrlBarActive(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                        <Text style={[styles.homeHeaderTitle, nightMode && styles.homeBrandNight]}>Homepage</Text>
+                      </TouchableOpacity>
+                    </View>
 
-                <View style={styles.homeSearchRow}>
-                  <TextInput
-                    style={[styles.homeSearchInput, nightMode && styles.homeSearchInputNight]}
-                    value={homeSearchInput}
-                    onChangeText={setHomeSearchInput}
-                    onSubmitEditing={openHomeSearch}
-                    placeholder="Search or type a URL"
-                    placeholderTextColor="#9a9a9a"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="go"
-                  />
-                  <TouchableOpacity style={styles.homeGoBtn} onPress={openHomeSearch}>
-                    <Text style={styles.homeGoBtnText}>Go</Text>
-                  </TouchableOpacity>
-                </View>
+                    <View style={styles.homeLogoWrap}>
+                      <Text
+                        style={[styles.homeBrand, nightMode && styles.homeBrandNight]}
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                      >
+                        AI Browser by Ishwar
+                      </Text>
+                    </View>
+
+                    <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
+                      <TextInput
+                        style={styles.homeSearchInputInner}
+                        value={homeSearchInput}
+                        onChangeText={setHomeSearchInput}
+                        onSubmitEditing={openHomeSearch}
+                        placeholder="Search or type a URL"
+                        placeholderTextColor="#9a9a9a"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        returnKeyType="go"
+                      />
+                      <TouchableOpacity style={styles.homeGoBtnInner} onPress={openHomeSearch}>
+                        <Text style={styles.homeGoBtnText}>Go</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
               </View>
             </View>
           ) : (
@@ -850,23 +891,25 @@ export default function App() {
         <Text style={styles.floatingBtnText}>🔍</Text>
       </Animated.View>
 
-      {/* Bottom toolbar — Via-style polished nav */}
+      {/* Bottom toolbar — clean 5-icon layout: Back / Forward / Home / Tabs / Menu */}
       <View style={styles.toolbarWrap}>
         <View style={styles.toolbar}>
           <TouchableOpacity onPress={goBack} disabled={!activeTab?.canGoBack} style={styles.toolBtn}>
-            <Text style={[styles.toolBtnText, !activeTab?.canGoBack && styles.toolBtnDisabled]}>←</Text>
+            <Ionicons
+              name="chevron-back-outline"
+              size={26}
+              color={activeTab?.canGoBack ? '#333' : '#d0d0d0'}
+            />
           </TouchableOpacity>
           <TouchableOpacity onPress={goForward} disabled={!activeTab?.canGoForward} style={styles.toolBtn}>
-            <Text style={[styles.toolBtnText, !activeTab?.canGoForward && styles.toolBtnDisabled]}>→</Text>
+            <Ionicons
+              name="chevron-forward-outline"
+              size={26}
+              color={activeTab?.canGoForward ? '#333' : '#d0d0d0'}
+            />
           </TouchableOpacity>
-          <TouchableOpacity onPress={reload} style={styles.toolBtn}>
-            <Text style={styles.toolBtnText}>⟳</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setShowHistory(true)} style={styles.toolBtn}>
-            <Text style={styles.toolBtnText}>🕘</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setShowBookmarks(true)} style={styles.toolBtn}>
-            <Text style={styles.toolBtnText}>📑</Text>
+          <TouchableOpacity onPress={goHome} style={styles.toolBtn}>
+            <Ionicons name="home-outline" size={24} color="#333" />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowTabSwitcher(true)} style={styles.toolBtn}>
             <View style={styles.tabCountBadge}>
@@ -874,7 +917,7 @@ export default function App() {
             </View>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowMenu(true)} style={styles.toolBtn}>
-            <Text style={styles.toolBtnText}>☰</Text>
+            <Ionicons name="menu-outline" size={26} color="#333" />
           </TouchableOpacity>
         </View>
       </View>
@@ -891,6 +934,7 @@ export default function App() {
                   onPress={() => {
                     setShowMenu(false);
                     if (item.key === 'night') toggleNightMode();
+                    else if (item.key === 'reload') reload();
                     else if (item.key === 'bookmarks') setShowBookmarks(true);
                     else if (item.key === 'history') setShowHistory(true);
                     else if (item.key === 'downloads') setShowDownloads(true);
@@ -970,8 +1014,8 @@ export default function App() {
 
       {/* Tab switcher modal */}
       <Modal visible={showTabSwitcher} animationType="slide" transparent onRequestClose={() => setShowTabSwitcher(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowTabSwitcher(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
             <Text style={styles.modalTitle}>Tabs</Text>
             <FlatList
               data={tabs}
@@ -998,14 +1042,14 @@ export default function App() {
             <TouchableOpacity onPress={() => setShowTabSwitcher(false)} style={styles.closeModalBtn}>
               <Text style={styles.closeModalBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Bookmarks modal */}
       <Modal visible={showBookmarks} animationType="slide" transparent onRequestClose={() => setShowBookmarks(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowBookmarks(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
             <Text style={styles.modalTitle}>Bookmarks</Text>
             <FlatList
               data={bookmarks}
@@ -1037,14 +1081,14 @@ export default function App() {
             <TouchableOpacity onPress={() => setShowBookmarks(false)} style={styles.closeModalBtn}>
               <Text style={styles.closeModalBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* History modal */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => setShowHistory(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowHistory(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
             <Text style={styles.modalTitle}>History</Text>
             <FlatList
               data={history}
@@ -1076,14 +1120,14 @@ export default function App() {
             <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.closeModalBtn}>
               <Text style={styles.closeModalBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Downloads modal */}
       <Modal visible={showDownloads} animationType="slide" transparent onRequestClose={() => setShowDownloads(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowDownloads(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
             <Text style={styles.modalTitle}>Downloads</Text>
             <FlatList
               data={downloads}
@@ -1110,19 +1154,24 @@ export default function App() {
             <TouchableOpacity onPress={() => setShowDownloads(false)} style={styles.closeModalBtn}>
               <Text style={styles.closeModalBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* AI subpage — opens full-height from the floating 🔍 button (Explain / Ask AI).
           There's no separate "find answers" mode: the user just types whatever they
           want to know about the screen into the input below and Ask AI answers it. */}
       <Modal visible={showAIPanel} animationType="slide" transparent onRequestClose={() => setShowAIPanel(false)}>
+        <TouchableOpacity
+          style={styles.aiOverlay}
+          activeOpacity={1}
+          onPress={() => setShowAIPanel(false)}
+        >
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.aiOverlay}
+          style={{ width: '100%' }}
         >
-          <View style={styles.aiCard}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.aiCard}>
             <View style={styles.aiHeaderRow}>
               <Text style={styles.modalTitle}>
                 {aiMode === 'explain' ? '📖 Explaining this page' : '✨ Ask AI'}
@@ -1145,9 +1194,16 @@ export default function App() {
                   <Text style={styles.aiLoadingText}>{AI_MODES[aiMode]?.hint || 'Thinking…'}</Text>
                 </View>
               ) : (
-                <Text style={[styles.aiAnswer, aiError && styles.aiAnswerError]}>
-                  {aiAnswer || 'Ask anything about what\u2019s on screen right now — I\u2019ll read the page and answer.'}
-                </Text>
+                <ScrollView
+                  style={{ flex: 1 }}
+                  contentContainerStyle={{ paddingBottom: 20 }}
+                  showsVerticalScrollIndicator
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <Text style={[styles.aiAnswer, aiError && styles.aiAnswerError]}>
+                    {aiAnswer || 'Ask anything about what\u2019s on screen right now — I\u2019ll read the page and answer.'}
+                  </Text>
+                </ScrollView>
               )}
             </View>
 
@@ -1168,14 +1224,15 @@ export default function App() {
             <TouchableOpacity onPress={() => setShowAIPanel(false)} style={styles.closeModalBtn}>
               <Text style={styles.closeModalBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
         </KeyboardAvoidingView>
+        </TouchableOpacity>
       </Modal>
 
       {/* AI Settings modal — None / Default (app key) / Custom key, Via-style */}
       <Modal visible={showAISettings} animationType="slide" transparent onRequestClose={() => setShowAISettings(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAISettings(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
             <Text style={styles.modalTitle}>AI service provider</Text>
 
             <TouchableOpacity style={styles.providerRow} onPress={() => selectProviderMode('none')}>
@@ -1239,14 +1296,14 @@ export default function App() {
             <TouchableOpacity onPress={() => setShowAISettings(false)} style={styles.closeModalBtn}>
               <Text style={styles.closeModalBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Admin passcode prompt — unlocks the shared "Default" backend on this device */}
       <Modal visible={showAdminPrompt} animationType="fade" transparent onRequestClose={() => setShowAdminPrompt(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAdminPrompt(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
             <Text style={styles.modalTitle}>Admin Access</Text>
             <Text style={styles.providerSubtext}>Enter the admin passcode to use the shared Default backend.</Text>
             <TextInput
@@ -1277,8 +1334,8 @@ export default function App() {
             >
               <Text style={styles.closeModalBtnText}>Cancel</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
@@ -1482,30 +1539,61 @@ const styles = StyleSheet.create({
   },
 
   // ---- Homepage (native, Via-style) ----
-  homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 90, paddingHorizontal: 20 },
+  homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 18, paddingHorizontal: 20 },
   homeScreenNight: { backgroundColor: '#111' },
+  homeHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginBottom: 60,
+  },
+  homeHeaderTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
+  homeUrlBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    backgroundColor: '#f1f1f3',
+    borderRadius: 24,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    marginBottom: 60,
+  },
+  homeUrlBarNight: { backgroundColor: '#222' },
+  homeUrlBarInput: {
+    flex: 1,
+    marginLeft: 8,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#111',
+  },
   homeLogoWrap: { alignItems: 'center', marginBottom: 32, width: '100%' },
   homeBrand: { fontSize: 18, fontWeight: '700', color: '#333', textAlign: 'center' },
   homeBrandNight: { color: '#eee' },
-  homeSearchRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
-  homeSearchInput: {
-    flex: 1,
+  homeSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
     backgroundColor: '#f1f1f3',
     borderRadius: 24,
     borderWidth: 1,
     borderColor: '#ececec',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingLeft: 16,
+    paddingRight: 6,
+    paddingVertical: 6,
+  },
+  homeSearchInputInner: {
+    flex: 1,
     fontSize: 15,
     color: '#111',
+    paddingVertical: 6,
   },
   homeSearchInputNight: { backgroundColor: '#222', borderColor: '#333', color: '#eee' },
-  homeGoBtn: {
-    marginLeft: 10,
+  homeGoBtnInner: {
     backgroundColor: '#5B5FEF',
     paddingHorizontal: 18,
-    paddingVertical: 12,
-    borderRadius: 22,
+    paddingVertical: 10,
+    borderRadius: 20,
   },
   homeGoBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 
