@@ -5,12 +5,15 @@
     "version": "1.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#ffffff"
+    },
     "android": {
-      "package": "com.yourname.aibrowser",
+      "package": "com.ishwar.aibrowser",
       "permissions": ["INTERNET"]
     },
     "ios": {
-      "bundleIdentifier": "com.yourname.aibrowser"
+      "bundleIdentifier": "com.ishwar.aibrowser"
     }
   }
 }
