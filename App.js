@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
   Animated,
   Easing,
+  StatusBar as RNStatusBar,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -20,11 +21,19 @@ import { StatusBar } from 'expo-status-bar';
 
 // ⚠️ Point this to your deployed backend (see api/ask.js in this project)
 const AI_ENDPOINT = 'https://ai-browser-by-iswar.vercel.app/api/ask';
+const GROQ_DIRECT_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 const HOME_URL = 'https://www.google.com';
 const HISTORY_KEY = 'history_v1';
 const BOOKMARKS_KEY = 'bookmarks_v1';
+const AI_PROVIDER_KEY = 'ai_provider_v1';
+const ADMIN_UNLOCK_KEY = 'ai_admin_unlocked_v1';
+// ⚠️ Change this to your own secret. Only devices that enter this correctly
+// can use the app's shared "Default" backend — everyone else must add their own key.
+const ADMIN_PASSCODE = 'joysiddhi123';
 const MAX_HISTORY = 200;
+const TOP_PADDING = Platform.OS === 'android' ? (RNStatusBar.currentHeight || 24) : 0;
 
 let tabIdCounter = 1;
 const makeTab = (url = HOME_URL) => ({
@@ -41,6 +50,67 @@ const AI_MODES = [
   { key: 'explain', label: '📖 Explain', hint: 'Explaining the page…' },
   { key: 'find_answers', label: '❓ Find Q&A', hint: 'Scanning page for questions…' },
 ];
+
+// Builds the same style of prompt the backend (api/ask.js) uses, so a
+// user-supplied Groq key produces consistent results when calling Groq directly.
+function buildMessages(mode, question, pageContext, pageUrl) {
+  const context = (pageContext || '').slice(0, 6000);
+  if (mode === 'explain') {
+    return [
+      { role: 'system', content: 'You explain web pages in a clear, mobile-friendly way for a general audience.' },
+      {
+        role: 'user',
+        content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nExplain what this page is about in a detailed, mobile-friendly breakdown.`,
+      },
+    ];
+  }
+  if (mode === 'find_answers') {
+    return [
+      {
+        role: 'system',
+        content:
+          'You scan web page text for FAQs, quiz questions, or form questions and answer each one. Respond ONLY with a JSON array like [{"question":"...","answer":"..."}]. No prose, no markdown fences.',
+      },
+      { role: 'user', content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}` },
+    ];
+  }
+  // ask
+  return [
+    { role: 'system', content: 'You answer questions about the current web page the user is viewing, using the provided page text as context.' },
+    {
+      role: 'user',
+      content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nQuestion: ${question || 'Summarize this page briefly.'}`,
+    },
+  ];
+}
+
+async function callGroqDirect(apiKey, mode, question, pageContext, pageUrl) {
+  const messages = buildMessages(mode, question, pageContext, pageUrl);
+  const res = await fetch(GROQ_DIRECT_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages,
+      temperature: 0.4,
+    }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json?.error?.message || 'Groq request failed');
+  const content = json?.choices?.[0]?.message?.content || '';
+  if (mode === 'find_answers') {
+    const cleaned = content.replace(/```json|```/g, '').trim();
+    try {
+      return { items: JSON.parse(cleaned) };
+    } catch (e) {
+      return { items: [] };
+    }
+  }
+  return { answer: content };
+}
 
 export default function App() {
   const [tabs, setTabs] = useState([makeTab()]);
@@ -59,6 +129,15 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
 
+  // ---------- AI provider settings ----------
+  const [aiProvider, setAiProvider] = useState({ mode: 'none', apiKey: '' }); // 'default' | 'custom' | 'none'
+  const [showAISettings, setShowAISettings] = useState(false);
+  const [customKeyInput, setCustomKeyInput] = useState('');
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminPrompt, setShowAdminPrompt] = useState(false);
+  const [adminPasscodeInput, setAdminPasscodeInput] = useState('');
+  const [adminError, setAdminError] = useState(false);
+
   const webviewRefs = useRef({}); // { [tabId]: WebView ref }
   const progressAnim = useRef(new Animated.Value(0)).current;
 
@@ -73,6 +152,22 @@ export default function App() {
         if (storedBookmarks) setBookmarks(JSON.parse(storedBookmarks));
         const storedHistory = await AsyncStorage.getItem(HISTORY_KEY);
         if (storedHistory) setHistory(JSON.parse(storedHistory));
+        const storedAdmin = await AsyncStorage.getItem(ADMIN_UNLOCK_KEY);
+        const adminUnlocked = storedAdmin === 'true';
+        setIsAdmin(adminUnlocked);
+
+        const storedProvider = await AsyncStorage.getItem(AI_PROVIDER_KEY);
+        if (storedProvider) {
+          const parsed = JSON.parse(storedProvider);
+          // Safety: if this device isn't admin-unlocked, never allow 'default' mode
+          // even if it was somehow saved before (e.g. app reinstalled data restore).
+          if (parsed.mode === 'default' && !adminUnlocked) {
+            setAiProvider({ mode: 'none', apiKey: parsed.apiKey || '' });
+          } else {
+            setAiProvider(parsed);
+          }
+          setCustomKeyInput(parsed.apiKey || '');
+        }
       } catch (e) {
         // ignore corrupt storage
       }
@@ -141,7 +236,7 @@ export default function App() {
   const normalizeUrl = (input) => {
     const trimmed = input.trim();
     if (!trimmed) return HOME_URL;
-    const looksLikeUrl = /^https?:\/\//i.test(trimmed) || /^[\w-]+\.[a-z]{2,}(\/.*)?$/i.test(trimmed);
+    const looksLikeUrl = /^https?:\/\//i.test(trimmed) || /^([\w-]+\.)+[a-z]{2,}(:\d+)?(\/.*)?$/i.test(trimmed);
     if (looksLikeUrl) {
       return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
     }
@@ -196,6 +291,43 @@ export default function App() {
     await AsyncStorage.removeItem(HISTORY_KEY);
   };
 
+  // ---------- AI provider settings persistence ----------
+  const saveAIProvider = async (next) => {
+    setAiProvider(next);
+    await AsyncStorage.setItem(AI_PROVIDER_KEY, JSON.stringify(next));
+  };
+
+  const selectProviderMode = async (mode) => {
+    if (mode === 'default' && !isAdmin) {
+      // Locked — only admin-unlocked devices can use the shared backend.
+      setShowAdminPrompt(true);
+      return;
+    }
+    if (mode === 'custom') {
+      await saveAIProvider({ mode: 'custom', apiKey: customKeyInput.trim() });
+    } else {
+      await saveAIProvider({ mode, apiKey: aiProvider.apiKey || '' });
+    }
+  };
+
+  const saveCustomKey = async () => {
+    await saveAIProvider({ mode: 'custom', apiKey: customKeyInput.trim() });
+    setShowAISettings(false);
+  };
+
+  const submitAdminPasscode = async () => {
+    if (adminPasscodeInput.trim() === ADMIN_PASSCODE) {
+      await AsyncStorage.setItem(ADMIN_UNLOCK_KEY, 'true');
+      setIsAdmin(true);
+      setAdminError(false);
+      setAdminPasscodeInput('');
+      setShowAdminPrompt(false);
+      await saveAIProvider({ mode: 'default', apiKey: aiProvider.apiKey || '' });
+    } else {
+      setAdminError(true);
+    }
+  };
+
   // ---------- AI panel ----------
   // Injected JS pulls visible text from the page so we can send context to Groq
   const EXTRACT_TEXT_JS = `
@@ -237,14 +369,28 @@ export default function App() {
     setAiError(false);
     setAiAnswer('');
     setAiItems(null);
+
+    if (aiProvider.mode === 'none') {
+      setAiError(true);
+      setAiAnswer('AI is turned off. Enable it from AI Settings (⚙️) — choose Default or add your own API key.');
+      setAiLoading(false);
+      return;
+    }
+
     try {
-      const res = await fetch(AI_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, question, pageContext, pageUrl: activeTab?.url }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'AI error');
+      let json;
+      if (aiProvider.mode === 'custom' && aiProvider.apiKey) {
+        json = await callGroqDirect(aiProvider.apiKey, mode, question, pageContext, activeTab?.url);
+      } else {
+        const res = await fetch(AI_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, question, pageContext, pageUrl: activeTab?.url }),
+        });
+        json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'AI error');
+      }
+
       if (mode === 'find_answers') {
         setAiItems(Array.isArray(json.items) ? json.items : []);
       } else {
@@ -252,7 +398,11 @@ export default function App() {
       }
     } catch (err) {
       setAiError(true);
-      setAiAnswer('Could not reach the AI backend. Check AI_ENDPOINT in App.js and your network connection.');
+      setAiAnswer(
+        aiProvider.mode === 'custom'
+          ? 'Could not reach Groq with your API key. Check the key in AI Settings.'
+          : "Could not reach the AI backend. Check AI_ENDPOINT in App.js and your network connection."
+      );
     } finally {
       setAiLoading(false);
     }
@@ -276,6 +426,7 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar style="dark" />
+      <View style={{ height: TOP_PADDING, backgroundColor: '#fff' }} />
 
       {/* URL bar */}
       <View style={styles.urlBar}>
@@ -362,31 +513,33 @@ export default function App() {
         ))}
       </View>
 
-      {/* Bottom toolbar */}
-      <View style={styles.toolbar}>
-        <TouchableOpacity onPress={goBack} disabled={!activeTab?.canGoBack} style={styles.toolBtn}>
-          <Text style={[styles.toolBtnText, !activeTab?.canGoBack && styles.toolBtnDisabled]}>←</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={goForward} disabled={!activeTab?.canGoForward} style={styles.toolBtn}>
-          <Text style={[styles.toolBtnText, !activeTab?.canGoForward && styles.toolBtnDisabled]}>→</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={reload} style={styles.toolBtn}>
-          <Text style={styles.toolBtnText}>⟳</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setShowHistory(true)} style={styles.toolBtn}>
-          <Text style={styles.toolBtnText}>🕘</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setShowBookmarks(true)} style={styles.toolBtn}>
-          <Text style={styles.toolBtnText}>📑</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setShowTabSwitcher(true)} style={styles.toolBtn}>
-          <View style={styles.tabCountBadge}>
-            <Text style={styles.tabCountText}>{tabs.length}</Text>
-          </View>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => runAIMode('ask')} onLongPress={openAIPanelBlank} style={[styles.toolBtn, styles.aiBtn]}>
-          <Text style={styles.toolBtnText}>✨ AI</Text>
-        </TouchableOpacity>
+      {/* Bottom toolbar — Via-style polished nav */}
+      <View style={styles.toolbarWrap}>
+        <View style={styles.toolbar}>
+          <TouchableOpacity onPress={goBack} disabled={!activeTab?.canGoBack} style={styles.toolBtn}>
+            <Text style={[styles.toolBtnText, !activeTab?.canGoBack && styles.toolBtnDisabled]}>←</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={goForward} disabled={!activeTab?.canGoForward} style={styles.toolBtn}>
+            <Text style={[styles.toolBtnText, !activeTab?.canGoForward && styles.toolBtnDisabled]}>→</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={reload} style={styles.toolBtn}>
+            <Text style={styles.toolBtnText}>⟳</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowHistory(true)} style={styles.toolBtn}>
+            <Text style={styles.toolBtnText}>🕘</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowBookmarks(true)} style={styles.toolBtn}>
+            <Text style={styles.toolBtnText}>📑</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowTabSwitcher(true)} style={styles.toolBtn}>
+            <View style={styles.tabCountBadge}>
+              <Text style={styles.tabCountText}>{tabs.length}</Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => runAIMode('ask')} onLongPress={openAIPanelBlank} style={[styles.toolBtn, styles.aiBtn]}>
+            <Text style={styles.aiBtnText}>✨ AI</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Tab switcher modal */}
@@ -508,7 +661,18 @@ export default function App() {
           style={styles.modalOverlay}
         >
           <View style={styles.aiCard}>
-            <Text style={styles.modalTitle}>✨ Ask AI about this page</Text>
+            <View style={styles.aiHeaderRow}>
+              <Text style={styles.modalTitle}>✨ Ask AI about this page</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setCustomKeyInput(aiProvider.apiKey || '');
+                  setShowAISettings(true);
+                }}
+                style={styles.settingsGearBtn}
+              >
+                <Text style={styles.settingsGearText}>⚙️</Text>
+              </TouchableOpacity>
+            </View>
 
             {/* Mode chips */}
             <View style={styles.modeRow}>
@@ -570,6 +734,115 @@ export default function App() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* AI Settings modal — None / Default (app key) / Custom key, Via-style */}
+      <Modal visible={showAISettings} animationType="slide" transparent onRequestClose={() => setShowAISettings(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>AI service provider</Text>
+
+            <TouchableOpacity style={styles.providerRow} onPress={() => selectProviderMode('none')}>
+              <View style={[styles.radioOuter, aiProvider.mode === 'none' && styles.radioOuterActive]}>
+                {aiProvider.mode === 'none' && <View style={styles.radioInner} />}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.providerLabel}>None</Text>
+                <Text style={styles.providerSubtext}>Turn AI features off</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.providerRow} onPress={() => selectProviderMode('default')}>
+              <View style={[styles.radioOuter, aiProvider.mode === 'default' && styles.radioOuterActive]}>
+                {aiProvider.mode === 'default' && <View style={styles.radioInner} />}
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.providerLabel}>{isAdmin ? 'Default' : '🔒 Default'}</Text>
+                <Text style={styles.providerSubtext}>
+                  {isAdmin ? "Uses the app's built-in AI backend" : 'Locked — admin only'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            {!isAdmin && (
+              <TouchableOpacity onPress={() => setShowAdminPrompt(true)} style={{ paddingVertical: 6 }}>
+                <Text style={{ color: '#5B5FEF', fontSize: 13, fontWeight: '600' }}>Unlock Admin Access</Text>
+              </TouchableOpacity>
+            )}
+
+            <View style={styles.providerRow}>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                onPress={() => aiProvider.mode === 'custom' || setShowAISettings(true)}
+              >
+                <View style={[styles.radioOuter, aiProvider.mode === 'custom' && styles.radioOuterActive]}>
+                  {aiProvider.mode === 'custom' && <View style={styles.radioInner} />}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.providerLabel}>Custom (your own key)</Text>
+                  <Text style={styles.providerSubtext}>Use your personal Groq API key</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.apiKeyInput}
+              value={customKeyInput}
+              onChangeText={setCustomKeyInput}
+              placeholder="Paste your Groq API key here"
+              placeholderTextColor="#9a9a9a"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+
+            <TouchableOpacity onPress={saveCustomKey} style={styles.newTabBtn}>
+              <Text style={styles.newTabBtnText}>Save & Use Custom Key</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setShowAISettings(false)} style={styles.closeModalBtn}>
+              <Text style={styles.closeModalBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Admin passcode prompt — unlocks the shared "Default" backend on this device */}
+      <Modal visible={showAdminPrompt} animationType="fade" transparent onRequestClose={() => setShowAdminPrompt(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Admin Access</Text>
+            <Text style={styles.providerSubtext}>Enter the admin passcode to use the shared Default backend.</Text>
+            <TextInput
+              style={[styles.apiKeyInput, { marginTop: 14 }]}
+              value={adminPasscodeInput}
+              onChangeText={(t) => {
+                setAdminPasscodeInput(t);
+                setAdminError(false);
+              }}
+              placeholder="Passcode"
+              placeholderTextColor="#9a9a9a"
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              onSubmitEditing={submitAdminPasscode}
+            />
+            {adminError && <Text style={{ color: '#d1453b', fontSize: 12, marginTop: 6 }}>Incorrect passcode.</Text>}
+            <TouchableOpacity onPress={submitAdminPasscode} style={styles.newTabBtn}>
+              <Text style={styles.newTabBtnText}>Unlock</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                setShowAdminPrompt(false);
+                setAdminPasscodeInput('');
+                setAdminError(false);
+              }}
+              style={styles.closeModalBtn}
+            >
+              <Text style={styles.closeModalBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -579,20 +852,20 @@ const styles = StyleSheet.create({
   urlBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderColor: '#e2e2e2',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
     backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderColor: '#ececec',
   },
   homeBtn: { paddingHorizontal: 6, paddingVertical: 6 },
   homeBtnText: { fontSize: 18, color: '#5B5FEF' },
   urlInput: {
     flex: 1,
-    backgroundColor: '#f1f1f1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    backgroundColor: '#f1f1f3',
+    borderRadius: 24,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     fontSize: 15,
     color: '#111',
   },
@@ -600,11 +873,11 @@ const styles = StyleSheet.create({
   starBtnText: { fontSize: 20, color: '#c9c9c9' },
   starActive: { color: '#f5a623' },
   goBtn: {
-    marginLeft: 4,
+    marginLeft: 6,
     backgroundColor: '#5B5FEF',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
   },
   goBtnText: { color: '#fff', fontWeight: '600' },
   progressTrack: { height: 2, backgroundColor: 'transparent' },
@@ -618,30 +891,52 @@ const styles = StyleSheet.create({
   errorText: { fontSize: 15, color: '#666', marginBottom: 12 },
   retryBtn: { backgroundColor: '#5B5FEF', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
   retryBtnText: { color: '#fff', fontWeight: '600' },
+
+  // Via-style bottom nav
+  toolbarWrap: {
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderColor: '#ececec',
+    ...Platform.select({
+      android: { elevation: 12 },
+      ios: {
+        shadowColor: '#000',
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: -3 },
+      },
+    }),
+  },
   toolbar: {
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderColor: '#e2e2e2',
-    backgroundColor: '#fafafa',
-  },
-  toolBtn: { paddingHorizontal: 8, paddingVertical: 4, alignItems: 'center', justifyContent: 'center' },
-  toolBtnText: { fontSize: 18, color: '#222' },
-  toolBtnDisabled: { color: '#ccc' },
-  tabCountBadge: {
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 1.5,
-    borderColor: '#222',
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 12,
     paddingHorizontal: 4,
   },
-  tabCountText: { fontSize: 12, fontWeight: '700', color: '#222' },
-  aiBtn: { backgroundColor: '#EDE9FE', borderRadius: 8, paddingHorizontal: 10 },
+  toolBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolBtnText: { fontSize: 20, color: '#333' },
+  toolBtnDisabled: { color: '#d0d0d0' },
+  tabCountBadge: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#333',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+  },
+  tabCountText: { fontSize: 12, fontWeight: '700', color: '#333' },
+  aiBtn: { backgroundColor: '#EDE9FE', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8 },
+  aiBtnText: { fontSize: 14, fontWeight: '700', color: '#5B5FEF' },
+
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -649,18 +944,21 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 16,
-    maxHeight: '75%',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
+    maxHeight: '78%',
   },
   aiCard: {
     backgroundColor: '#fff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    padding: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
     height: '72%',
   },
+  aiHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  settingsGearBtn: { padding: 6 },
+  settingsGearText: { fontSize: 20 },
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 10, color: '#111' },
   modeRow: { flexDirection: 'row', marginBottom: 10 },
   modeChip: {
@@ -684,7 +982,7 @@ const styles = StyleSheet.create({
   tabRowText: { fontSize: 15, color: '#111' },
   tabRowSubtext: { fontSize: 12, color: '#999', marginTop: 2 },
   closeX: { fontSize: 16, color: '#999', paddingHorizontal: 8 },
-  newTabBtn: { marginTop: 10, paddingVertical: 10, alignItems: 'center', backgroundColor: '#5B5FEF', borderRadius: 8 },
+  newTabBtn: { marginTop: 10, paddingVertical: 12, alignItems: 'center', backgroundColor: '#5B5FEF', borderRadius: 12 },
   newTabBtnText: { color: '#fff', fontWeight: '600' },
   closeModalBtn: { marginTop: 10, paddingVertical: 10, alignItems: 'center' },
   closeModalBtnText: { color: '#5B5FEF', fontWeight: '600' },
@@ -708,4 +1006,30 @@ const styles = StyleSheet.create({
     color: '#111',
   },
   emptyText: { textAlign: 'center', color: '#999', marginTop: 20 },
+
+  // AI Settings (provider) modal
+  providerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12 },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: '#c9c9c9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  radioOuterActive: { borderColor: '#5B5FEF' },
+  radioInner: { width: 11, height: 11, borderRadius: 6, backgroundColor: '#5B5FEF' },
+  providerLabel: { fontSize: 16, color: '#111', fontWeight: '600' },
+  providerSubtext: { fontSize: 12, color: '#999', marginTop: 2 },
+  apiKeyInput: {
+    backgroundColor: '#f1f1f1',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#111',
+    marginTop: 8,
+  },
 });
