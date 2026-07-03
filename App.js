@@ -13,11 +13,18 @@ import {
   KeyboardAvoidingView,
   Animated,
   Easing,
+  Dimensions,
+  PanResponder,
+  Share,
+  Alert,
+  BackHandler,
   StatusBar as RNStatusBar,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
+import * as Clipboard from 'expo-clipboard';
+// ⚠️ Needs: expo install expo-clipboard
 
 // ⚠️ Point this to your deployed backend (see api/ask.js in this project)
 const AI_ENDPOINT = 'https://ai-browser-by-iswar.vercel.app/api/ask';
@@ -25,8 +32,11 @@ const GROQ_DIRECT_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 const HOME_URL = 'https://www.google.com';
+// Sentinel "url" that means: show the native Homepage screen instead of a WebView.
+const HOME_MARKER = 'app://home';
 const HISTORY_KEY = 'history_v1';
 const BOOKMARKS_KEY = 'bookmarks_v1';
+const SHORTCUTS_KEY = 'shortcuts_v1';
 const AI_PROVIDER_KEY = 'ai_provider_v1';
 const ADMIN_UNLOCK_KEY = 'ai_admin_unlocked_v1';
 // ⚠️ Change this to your own secret. Only devices that enter this correctly
@@ -34,16 +44,34 @@ const ADMIN_UNLOCK_KEY = 'ai_admin_unlocked_v1';
 const ADMIN_PASSCODE = 'joysiddhi123';
 const MAX_HISTORY = 200;
 const TOP_PADDING = Platform.OS === 'android' ? (RNStatusBar.currentHeight || 24) : 0;
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 let tabIdCounter = 1;
-const makeTab = (url = HOME_URL) => ({
+const makeTab = (url = HOME_MARKER, opts = {}) => ({
   id: tabIdCounter++,
   url,
-  title: url,
+  title: url === HOME_MARKER ? 'Homepage' : url,
   canGoBack: false,
   canGoForward: false,
-  loading: true,
+  loading: url !== HOME_MARKER,
+  isIncognito: !!opts.incognito,
 });
+
+// Grid menu items shown when the hamburger (☰) button is tapped — Via-style bottom sheet.
+const MENU_ITEMS_DEF = [
+  { key: 'night', icon: '🌙', label: 'Night mode' },
+  { key: 'bookmarks', icon: '📑', label: 'Bookmarks' },
+  { key: 'history', icon: '🕘', label: 'History' },
+  { key: 'downloads', icon: '⬇️', label: 'Downloads' },
+  { key: 'incognito', icon: '🕵️', label: 'Incognito' },
+  { key: 'share', icon: '🔗', label: 'Share' },
+  { key: 'addBookmark', icon: '⭐', label: 'Add bookmark' },
+  { key: 'desktop', icon: '🖥️', label: 'Desktop site' },
+  { key: 'aiTools', icon: '✨', label: 'AI Tools' },
+  { key: 'settings', icon: '⚙️', label: 'Settings' },
+];
 
 const AI_MODES = [
   { key: 'ask', label: '💬 Ask', hint: 'Ask something about this page…' },
@@ -115,8 +143,21 @@ async function callGroqDirect(apiKey, mode, question, pageContext, pageUrl) {
 export default function App() {
   const [tabs, setTabs] = useState([makeTab()]);
   const [activeTabId, setActiveTabId] = useState(tabs[0].id);
-  const [urlInput, setUrlInput] = useState(HOME_URL);
+  const [urlInput, setUrlInput] = useState('');
   const [showTabSwitcher, setShowTabSwitcher] = useState(false);
+  // Hamburger grid menu (Via-style bottom sheet)
+  const [showMenu, setShowMenu] = useState(false);
+  const [nightMode, setNightMode] = useState(false);
+  const [desktopMode, setDesktopMode] = useState(false);
+  // Homepage shortcuts
+  const [shortcuts, setShortcuts] = useState([]);
+  const [editingShortcuts, setEditingShortcuts] = useState(false);
+  const [homeSearchInput, setHomeSearchInput] = useState('');
+  const [showAddShortcut, setShowAddShortcut] = useState(false);
+  const [newShortcutTitle, setNewShortcutTitle] = useState('');
+  const [newShortcutUrl, setNewShortcutUrl] = useState('');
+  // Floating draggable "inspect" button — works anywhere, over any page
+  const [showFloatingMenu, setShowFloatingMenu] = useState(false);
   const [showAIPanel, setShowAIPanel] = useState(false);
   const [aiMode, setAiMode] = useState('ask');
   const [aiQuestion, setAiQuestion] = useState('');
@@ -152,6 +193,8 @@ export default function App() {
         if (storedBookmarks) setBookmarks(JSON.parse(storedBookmarks));
         const storedHistory = await AsyncStorage.getItem(HISTORY_KEY);
         if (storedHistory) setHistory(JSON.parse(storedHistory));
+        const storedShortcuts = await AsyncStorage.getItem(SHORTCUTS_KEY);
+        if (storedShortcuts) setShortcuts(JSON.parse(storedShortcuts));
         const storedAdmin = await AsyncStorage.getItem(ADMIN_UNLOCK_KEY);
         const adminUnlocked = storedAdmin === 'true';
         setIsAdmin(adminUnlocked);
@@ -193,16 +236,75 @@ export default function App() {
     }
   }, [activeTab?.loading, activeTabId]);
 
+  // ---------- Hardware back button (Android) ----------
+  // Fixes: pressing back used to close the whole app instead of going to the
+  // previous page, and never asked for confirmation before exiting.
+  useEffect(() => {
+    const backAction = () => {
+      // Close any open modal/sheet first
+      if (showMenu) { setShowMenu(false); return true; }
+      if (showFloatingMenu) { setShowFloatingMenu(false); return true; }
+      if (showAddShortcut) { setShowAddShortcut(false); return true; }
+      if (showAdminPrompt) { setShowAdminPrompt(false); return true; }
+      if (showAISettings) { setShowAISettings(false); return true; }
+      if (showAIPanel) { setShowAIPanel(false); return true; }
+      if (showTabSwitcher) { setShowTabSwitcher(false); return true; }
+      if (showBookmarks) { setShowBookmarks(false); return true; }
+      if (showHistory) { setShowHistory(false); return true; }
+
+      // On a real webpage with history → go back inside the page
+      if (activeTab && activeTab.url !== HOME_MARKER && activeTab.canGoBack) {
+        webviewRefs.current[activeTabId]?.goBack();
+        return true;
+      }
+
+      // On a webpage with no more history → drop back to the Homepage
+      if (activeTab && activeTab.url !== HOME_MARKER) {
+        goHome();
+        return true;
+      }
+
+      // Already on Homepage, more than one tab open → close this tab
+      if (tabs.length > 1) {
+        closeTab(activeTabId);
+        return true;
+      }
+
+      // Homepage + only tab left → confirm before exiting
+      Alert.alert('Exit AI Browser?', 'Kya aap app band karna chahte hain?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Exit', style: 'destructive', onPress: () => BackHandler.exitApp() },
+      ]);
+      return true;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => sub.remove();
+  }, [
+    activeTab,
+    activeTabId,
+    tabs,
+    showMenu,
+    showFloatingMenu,
+    showAddShortcut,
+    showAdminPrompt,
+    showAISettings,
+    showAIPanel,
+    showTabSwitcher,
+    showBookmarks,
+    showHistory,
+  ]);
+
   // ---------- Tab helpers ----------
   const updateTab = (id, patch) => {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   };
 
-  const addTab = (url) => {
-    const newTab = makeTab(url);
+  const addTab = (url = HOME_MARKER, opts = {}) => {
+    const newTab = makeTab(url, opts);
     setTabs((prev) => [...prev, newTab]);
     setActiveTabId(newTab.id);
-    setUrlInput(newTab.url);
+    setUrlInput(newTab.url === HOME_MARKER ? '' : newTab.url);
     setShowTabSwitcher(false);
   };
 
@@ -228,7 +330,7 @@ export default function App() {
   const switchTab = (id) => {
     setActiveTabId(id);
     const tab = tabs.find((t) => t.id === id);
-    if (tab) setUrlInput(tab.url);
+    if (tab) setUrlInput(tab.url === HOME_MARKER ? '' : tab.url);
     setShowTabSwitcher(false);
   };
 
@@ -251,7 +353,10 @@ export default function App() {
   const goBack = () => webviewRefs.current[activeTabId]?.goBack();
   const goForward = () => webviewRefs.current[activeTabId]?.goForward();
   const reload = () => webviewRefs.current[activeTabId]?.reload();
-  const goHome = () => updateTab(activeTabId, { url: HOME_URL, loading: true });
+  const goHome = () => {
+    updateTab(activeTabId, { url: HOME_MARKER, loading: false, title: 'Homepage' });
+    setUrlInput('');
+  };
 
   // ---------- Bookmarks ----------
   const persistBookmarks = async (updated) => {
@@ -290,6 +395,113 @@ export default function App() {
     setHistory([]);
     await AsyncStorage.removeItem(HISTORY_KEY);
   };
+
+  // ---------- Homepage shortcuts ----------
+  const persistShortcuts = async (updated) => {
+    setShortcuts(updated);
+    await AsyncStorage.setItem(SHORTCUTS_KEY, JSON.stringify(updated));
+  };
+
+  const addShortcut = async (title, rawUrl) => {
+    if (!rawUrl?.trim()) return;
+    const url = normalizeUrl(rawUrl.trim());
+    await persistShortcuts([{ title: title?.trim() || url, url }, ...shortcuts]);
+  };
+
+  const removeShortcut = async (url) => {
+    await persistShortcuts(shortcuts.filter((s) => s.url !== url));
+  };
+
+  const submitAddShortcut = () => {
+    if (!newShortcutUrl.trim()) return;
+    addShortcut(newShortcutTitle, newShortcutUrl);
+    setNewShortcutTitle('');
+    setNewShortcutUrl('');
+    setShowAddShortcut(false);
+  };
+
+  const openHomeSearch = () => {
+    if (!homeSearchInput.trim()) return;
+    const finalUrl = normalizeUrl(homeSearchInput);
+    updateTab(activeTabId, { url: finalUrl, loading: true });
+    setUrlInput(finalUrl);
+    setHomeSearchInput('');
+  };
+
+  // ---------- Night mode / Desktop site / Share (hamburger menu actions) ----------
+  const NIGHT_MODE_JS = `
+    (function() {
+      let s = document.getElementById('__ai_browser_night');
+      if (s) { s.remove(); }
+      else {
+        s = document.createElement('style');
+        s.id = '__ai_browser_night';
+        s.innerHTML = 'html{filter:invert(1) hue-rotate(180deg);background:#111;} img,video,picture,iframe{filter:invert(1) hue-rotate(180deg);}';
+        document.head.appendChild(s);
+      }
+    })();
+    true;
+  `;
+
+  const toggleNightMode = () => {
+    setNightMode((v) => !v);
+    webviewRefs.current[activeTabId]?.injectJavaScript(NIGHT_MODE_JS);
+  };
+
+  const toggleDesktopMode = () => {
+    setDesktopMode((v) => !v);
+    setTimeout(() => webviewRefs.current[activeTabId]?.reload(), 60);
+  };
+
+  const shareCurrentPage = async () => {
+    if (!activeTab || activeTab.url === HOME_MARKER) return;
+    try {
+      await Share.share({ message: activeTab.url, title: activeTab.title || activeTab.url });
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const openIncognitoTab = () => addTab(HOME_MARKER, { incognito: true });
+
+  // ---------- Floating "inspect" button — copy page text / find answers anywhere ----------
+  const COPY_TEXT_JS = `
+    (function() {
+      const text = document.body ? document.body.innerText.slice(0, 6000) : '';
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'COPY_TEXT', text }));
+    })();
+    true;
+  `;
+
+  const copyPageText = () => {
+    if (!activeTab || activeTab.url === HOME_MARKER) {
+      Alert.alert('Nothing to copy', 'Open a webpage first, then use this button.');
+      return;
+    }
+    webviewRefs.current[activeTabId]?.injectJavaScript(COPY_TEXT_JS);
+  };
+
+  const floatingPos = useRef(new Animated.ValueXY({ x: SCREEN_W - 66, y: SCREEN_H - 260 })).current;
+  const floatingDragging = useRef(false);
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (evt, gesture) => Math.abs(gesture.dx) > 4 || Math.abs(gesture.dy) > 4,
+      onPanResponderGrant: () => {
+        floatingDragging.current = false;
+        floatingPos.setOffset({ x: floatingPos.x._value, y: floatingPos.y._value });
+        floatingPos.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: (evt, gesture) => {
+        if (Math.abs(gesture.dx) > 4 || Math.abs(gesture.dy) > 4) floatingDragging.current = true;
+        Animated.event([null, { dx: floatingPos.x, dy: floatingPos.y }], { useNativeDriver: false })(evt, gesture);
+      },
+      onPanResponderRelease: () => {
+        floatingPos.flattenOffset();
+        if (!floatingDragging.current) setShowFloatingMenu(true);
+      },
+    })
+  ).current;
 
   // ---------- AI provider settings persistence ----------
   const saveAIProvider = async (next) => {
@@ -347,6 +559,10 @@ export default function App() {
         const mode = pendingAIAction;
         setPendingAIAction(null);
         await askAI({ mode, pageContext: data.text });
+      }
+      if (data.type === 'COPY_TEXT') {
+        await Clipboard.setStringAsync(data.text || '');
+        Alert.alert('Copied ✅', 'Page text copied to clipboard.');
       }
     } catch (e) {
       // ignore non-JSON messages
@@ -441,7 +657,7 @@ export default function App() {
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="url"
-          placeholder="Search or type a URL"
+          placeholder={activeTab?.url === HOME_MARKER ? 'Homepage' : 'Search or type a URL'}
           placeholderTextColor="#9a9a9a"
           returnKeyType="go"
         />
@@ -471,47 +687,119 @@ export default function App() {
         />
       </View>
 
-      {/* Active WebView */}
+      {/* Active WebView (or native Homepage for HOME_MARKER tabs) */}
       <View style={{ flex: 1 }}>
-        {tabs.map((tab) => (
-          <View key={tab.id} style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}>
-            <WebView
-              ref={(ref) => (webviewRefs.current[tab.id] = ref)}
-              source={{ uri: tab.url }}
-              onLoadStart={() => updateTab(tab.id, { loading: true })}
-              onLoadEnd={() => {
-                updateTab(tab.id, { loading: false });
-                const t = tabs.find((x) => x.id === tab.id);
-                addToHistory(t?.url, t?.title);
-              }}
-              onNavigationStateChange={(navState) => {
-                updateTab(tab.id, {
-                  url: navState.url,
-                  title: navState.title || navState.url,
-                  canGoBack: navState.canGoBack,
-                  canGoForward: navState.canGoForward,
-                });
-                if (tab.id === activeTabId) setUrlInput(navState.url);
-              }}
-              onMessage={handleWebViewMessage}
-              startInLoadingState
-              renderLoading={() => (
-                <View style={styles.loadingOverlay}>
-                  <ActivityIndicator size="large" color="#5B5FEF" />
+        {tabs.map((tab) =>
+          tab.url === HOME_MARKER ? (
+            <View
+              key={tab.id}
+              style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
+            >
+              <View style={styles.homeScreen}>
+                <View style={styles.homeLogoWrap}>
+                  <Text style={styles.homeLogoEmoji}>🅰️</Text>
+                  <Text style={styles.homeBrand}>AI Browser{'\n'}by Ishwar</Text>
                 </View>
-              )}
-              renderError={() => (
-                <View style={styles.loadingOverlay}>
-                  <Text style={styles.errorText}>⚠️ Couldn't load this page</Text>
-                  <TouchableOpacity onPress={reload} style={styles.retryBtn}>
-                    <Text style={styles.retryBtnText}>Retry</Text>
+
+                <View style={styles.homeSearchRow}>
+                  <TouchableOpacity style={styles.roundIconBtn} onPress={() => setShowAddShortcut(true)}>
+                    <Text style={styles.roundIconText}>+</Text>
+                  </TouchableOpacity>
+                  <TextInput
+                    style={styles.homeSearchInput}
+                    value={homeSearchInput}
+                    onChangeText={setHomeSearchInput}
+                    onSubmitEditing={openHomeSearch}
+                    placeholder="Search or type a URL"
+                    placeholderTextColor="#9a9a9a"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="go"
+                  />
+                  <TouchableOpacity style={styles.roundIconBtn} onPress={() => setEditingShortcuts((v) => !v)}>
+                    <Text style={styles.roundIconText}>−</Text>
                   </TouchableOpacity>
                 </View>
-              )}
-            />
-          </View>
-        ))}
+
+                <View style={styles.shortcutsGrid}>
+                  {shortcuts.map((s) => (
+                    <TouchableOpacity
+                      key={s.url}
+                      style={styles.shortcutTile}
+                      onPress={() =>
+                        editingShortcuts
+                          ? removeShortcut(s.url)
+                          : (updateTab(tab.id, { url: s.url, loading: true }), setUrlInput(s.url))
+                      }
+                    >
+                      <Text style={styles.shortcutIcon}>{editingShortcuts ? '✕' : '🌐'}</Text>
+                      <Text numberOfLines={1} style={styles.shortcutLabel}>
+                        {s.title}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                  {!editingShortcuts && (
+                    <TouchableOpacity style={styles.shortcutTile} onPress={() => setShowAddShortcut(true)}>
+                      <Text style={[styles.shortcutIcon, { fontSize: 22 }]}>+</Text>
+                      <Text style={styles.shortcutLabel}>Add</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            </View>
+          ) : (
+            <View
+              key={tab.id}
+              style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
+            >
+              <WebView
+                ref={(ref) => (webviewRefs.current[tab.id] = ref)}
+                source={{ uri: tab.url }}
+                userAgent={desktopMode ? DESKTOP_UA : undefined}
+                incognito={tab.isIncognito}
+                onLoadStart={() => updateTab(tab.id, { loading: true })}
+                onLoadEnd={() => {
+                  updateTab(tab.id, { loading: false });
+                  const t = tabs.find((x) => x.id === tab.id);
+                  if (!t?.isIncognito) addToHistory(t?.url, t?.title);
+                }}
+                onNavigationStateChange={(navState) => {
+                  updateTab(tab.id, {
+                    url: navState.url,
+                    title: navState.title || navState.url,
+                    canGoBack: navState.canGoBack,
+                    canGoForward: navState.canGoForward,
+                  });
+                  if (tab.id === activeTabId) setUrlInput(navState.url);
+                }}
+                onMessage={handleWebViewMessage}
+                startInLoadingState
+                renderLoading={() => (
+                  <View style={styles.loadingOverlay}>
+                    <ActivityIndicator size="large" color="#5B5FEF" />
+                  </View>
+                )}
+                renderError={() => (
+                  <View style={styles.loadingOverlay}>
+                    <Text style={styles.errorText}>⚠️ Couldn't load this page</Text>
+                    <TouchableOpacity onPress={reload} style={styles.retryBtn}>
+                      <Text style={styles.retryBtnText}>Retry</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              />
+            </View>
+          )
+        )}
       </View>
+
+      {/* Floating draggable button — drag anywhere, tap to copy/find text on screen */}
+      <Animated.View
+        style={[styles.floatingBtn, { transform: floatingPos.getTranslateTransform() }]}
+        {...panResponder.panHandlers}
+      >
+        <Text style={styles.floatingBtnText}>🔍</Text>
+      </Animated.View>
 
       {/* Bottom toolbar — Via-style polished nav */}
       <View style={styles.toolbarWrap}>
@@ -539,8 +827,139 @@ export default function App() {
           <TouchableOpacity onPress={() => runAIMode('ask')} onLongPress={openAIPanelBlank} style={[styles.toolBtn, styles.aiBtn]}>
             <Text style={styles.aiBtnText}>✨ AI</Text>
           </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowMenu(true)} style={styles.toolBtn}>
+            <Text style={styles.toolBtnText}>☰</Text>
+          </TouchableOpacity>
         </View>
       </View>
+
+      {/* Hamburger grid menu — Via-style bottom sheet, tap outside to close */}
+      <Modal visible={showMenu} animationType="fade" transparent onRequestClose={() => setShowMenu(false)}>
+        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setShowMenu(false)}>
+          <TouchableOpacity activeOpacity={1} style={styles.menuSheet} onPress={() => {}}>
+            <View style={styles.menuGrid}>
+              {MENU_ITEMS_DEF.map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  style={styles.menuItem}
+                  onPress={() => {
+                    setShowMenu(false);
+                    if (item.key === 'night') toggleNightMode();
+                    else if (item.key === 'bookmarks') setShowBookmarks(true);
+                    else if (item.key === 'history') setShowHistory(true);
+                    else if (item.key === 'downloads') Alert.alert('Downloads', 'Coming soon.');
+                    else if (item.key === 'incognito') openIncognitoTab();
+                    else if (item.key === 'share') shareCurrentPage();
+                    else if (item.key === 'addBookmark') toggleBookmark();
+                    else if (item.key === 'desktop') toggleDesktopMode();
+                    else if (item.key === 'aiTools') runAIMode('find_answers');
+                    else if (item.key === 'settings') {
+                      setCustomKeyInput(aiProvider.apiKey || '');
+                      setShowAISettings(true);
+                    }
+                  }}
+                >
+                  <Text style={styles.menuIcon}>
+                    {item.key === 'night' && nightMode ? '☀️' : item.key === 'desktop' && desktopMode ? '📱' : item.icon}
+                  </Text>
+                  <Text style={styles.menuLabel}>
+                    {item.key === 'night' && nightMode
+                      ? 'Day mode'
+                      : item.key === 'desktop' && desktopMode
+                      ? 'Mobile site'
+                      : item.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={styles.menuCloseChevron} onPress={() => setShowMenu(false)}>
+              <Text style={{ fontSize: 18, color: '#999' }}>⌄</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Floating button quick menu */}
+      <Modal
+        visible={showFloatingMenu}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowFloatingMenu(false)}
+      >
+        <TouchableOpacity
+          style={styles.floatingMenuOverlay}
+          activeOpacity={1}
+          onPress={() => setShowFloatingMenu(false)}
+        >
+          <View style={styles.floatingMenuCard}>
+            <TouchableOpacity
+              style={styles.floatingMenuItem}
+              onPress={() => {
+                setShowFloatingMenu(false);
+                copyPageText();
+              }}
+            >
+              <Text style={styles.floatingMenuText}>📋 Copy page text</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.floatingMenuItem}
+              onPress={() => {
+                setShowFloatingMenu(false);
+                runAIMode('find_answers');
+              }}
+            >
+              <Text style={styles.floatingMenuText}>🔍 Find answers on screen</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.floatingMenuItem}
+              onPress={() => {
+                setShowFloatingMenu(false);
+                openAIPanelBlank();
+              }}
+            >
+              <Text style={styles.floatingMenuText}>✨ Ask AI</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Add shortcut modal — for the "+" button on Homepage */}
+      <Modal
+        visible={showAddShortcut}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowAddShortcut(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Add shortcut</Text>
+            <TextInput
+              style={styles.apiKeyInput}
+              value={newShortcutTitle}
+              onChangeText={setNewShortcutTitle}
+              placeholder="Name (optional)"
+              placeholderTextColor="#9a9a9a"
+            />
+            <TextInput
+              style={styles.apiKeyInput}
+              value={newShortcutUrl}
+              onChangeText={setNewShortcutUrl}
+              placeholder="Website URL"
+              placeholderTextColor="#9a9a9a"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              onSubmitEditing={submitAddShortcut}
+            />
+            <TouchableOpacity onPress={submitAddShortcut} style={styles.newTabBtn}>
+              <Text style={styles.newTabBtnText}>Add</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowAddShortcut(false)} style={styles.closeModalBtn}>
+              <Text style={styles.closeModalBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Tab switcher modal */}
       <Modal visible={showTabSwitcher} animationType="slide" transparent onRequestClose={() => setShowTabSwitcher(false)}>
@@ -1032,4 +1451,102 @@ const styles = StyleSheet.create({
     color: '#111',
     marginTop: 8,
   },
+
+  // ---- Homepage (native, Via-style) ----
+  homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 60, paddingHorizontal: 20 },
+  homeLogoWrap: { alignItems: 'center', marginBottom: 28 },
+  homeLogoEmoji: { fontSize: 56, marginBottom: 8 },
+  homeBrand: { fontSize: 15, fontWeight: '700', color: '#333', textAlign: 'center', lineHeight: 20 },
+  homeSearchRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
+  roundIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#e9e9ec',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  roundIconText: { fontSize: 20, color: '#555', fontWeight: '600' },
+  homeSearchInput: {
+    flex: 1,
+    marginHorizontal: 10,
+    backgroundColor: '#f1f1f3',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#ececec',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: '#111',
+  },
+  shortcutsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 26,
+    width: '100%',
+    justifyContent: 'flex-start',
+  },
+  shortcutTile: { width: '25%', alignItems: 'center', marginBottom: 18 },
+  shortcutIcon: {
+    fontSize: 22,
+    width: 52,
+    height: 52,
+    lineHeight: 52,
+    textAlign: 'center',
+    backgroundColor: '#f1f1f3',
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  shortcutLabel: { fontSize: 11, color: '#555', marginTop: 4, maxWidth: 60, textAlign: 'center' },
+
+  // ---- Hamburger grid menu ----
+  menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  menuSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 20,
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+  },
+  menuGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  menuItem: { width: '20%', alignItems: 'center', marginBottom: 20 },
+  menuIcon: { fontSize: 24, marginBottom: 6 },
+  menuLabel: { fontSize: 11, color: '#333', textAlign: 'center' },
+  menuCloseChevron: { alignItems: 'center', paddingVertical: 8 },
+
+  // ---- Floating draggable "inspect" button ----
+  floatingBtn: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#5B5FEF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      android: { elevation: 10 },
+      ios: { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
+    }),
+    zIndex: 999,
+  },
+  floatingBtnText: { fontSize: 22 },
+  floatingMenuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' },
+  floatingMenuCard: {
+    position: 'absolute',
+    right: 16,
+    bottom: 220,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    paddingVertical: 6,
+    minWidth: 220,
+    ...Platform.select({
+      android: { elevation: 8 },
+      ios: { shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
+    }),
+  },
+  floatingMenuItem: { paddingVertical: 12, paddingHorizontal: 16 },
+  floatingMenuText: { fontSize: 14, color: '#222', fontWeight: '600' },
 });
