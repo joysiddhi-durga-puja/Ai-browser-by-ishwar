@@ -91,7 +91,6 @@ const MENU_ITEMS_DEF = [
   { key: 'share', icon: '🔗', label: 'Share' },
   { key: 'addBookmark', icon: '⭐', label: 'Add bookmark' },
   { key: 'desktop', icon: '🖥️', label: 'Desktop site' },
-  { key: 'autofillRun', icon: '📝', label: 'Fill form' },
   { key: 'autofillInfo', icon: '🪪', label: 'My info' },
   { key: 'settings', icon: '⚙️', label: 'Settings' },
 ];
@@ -235,6 +234,8 @@ export default function App() {
   const progressAnim = useRef(new Animated.Value(0)).current;
   // Floating "TL;DR" button — shown once the user scrolls deep into a long article
   const [showTldrButton, setShowTldrButton] = useState(false);
+  // Floating "Fill form" chip — shown automatically once a page with a form is detected.
+  const [showFillFormButton, setShowFillFormButton] = useState(false);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const isBookmarked = activeTab && bookmarks.some((b) => b.url === activeTab.url);
@@ -624,6 +625,41 @@ export default function App() {
 
   const openIncognitoTab = () => addTab(HOME_MARKER, { incognito: true });
 
+  // Whether incognito mode is currently "on" — true if any open tab is incognito.
+  const isIncognitoOn = tabs.some((t) => t.isIncognito);
+
+  // Pressing the Incognito menu button again while incognito is on: close every
+  // incognito tab (clearing them for good) and drop back to a normal tab.
+  const exitIncognito = () => {
+    setTabs((prev) => {
+      const remaining = prev.filter((t) => !t.isIncognito);
+      const closed = prev.filter((t) => t.isIncognito);
+      closed.forEach((t) => {
+        delete webviewRefs.current[t.id];
+        delete viewShotRefs.current[t.id];
+      });
+      if (remaining.length === 0) {
+        const fresh = makeTab();
+        setActiveTabId(fresh.id);
+        setUrlInput(fresh.url);
+        return [fresh];
+      }
+      if (!remaining.some((t) => t.id === activeTabId)) {
+        const next = remaining[remaining.length - 1];
+        setActiveTabId(next.id);
+        setUrlInput(next.url === HOME_MARKER ? '' : next.url);
+      }
+      return remaining;
+    });
+  };
+
+  // Incognito menu button toggle: off → on opens a new incognito tab, on → off
+  // closes all incognito tabs.
+  const toggleIncognito = () => {
+    if (isIncognitoOn) exitIncognito();
+    else openIncognitoTab();
+  };
+
   // ---------- Floating "inspect" button — copy page text / find answers anywhere ----------
   const COPY_TEXT_JS = `
     (function() {
@@ -890,6 +926,31 @@ export default function App() {
     true;
   `;
 
+  // Detects whether the current page has a fillable form (a real <form>, or at
+  // least a couple of text-like inputs) so we can surface the "Fill form" chip
+  // automatically — no manual button needed.
+  const FORM_DETECT_JS = `
+    (function() {
+      if (window.__formDetectInstalled) return true;
+      window.__formDetectInstalled = true;
+      function check() {
+        var hasForm = document.forms && document.forms.length > 0;
+        if (!hasForm) {
+          var inputs = document.querySelectorAll(
+            'input[type="text"], input[type="email"], input[type="tel"], input[type="number"], input:not([type])'
+          );
+          hasForm = inputs.length >= 2;
+        }
+        if (hasForm) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'FORM_DETECTED' }));
+        }
+      }
+      check();
+      setTimeout(check, 1200);
+    })();
+    true;
+  `;
+
   const handleWebViewMessage = async (event) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -904,6 +965,9 @@ export default function App() {
       }
       if (data.type === 'SHOW_TLDR') {
         setShowTldrButton(true);
+      }
+      if (data.type === 'FORM_DETECTED') {
+        setShowFillFormButton(true);
       }
       if (data.type === 'AUTOFILL_DONE') {
         if (data.count > 0) {
@@ -1016,13 +1080,6 @@ export default function App() {
       <StatusBar style="dark" />
       <View style={{ height: TOP_PADDING, backgroundColor: activeTab?.isIncognito ? '#1a1a1a' : '#fff' }} />
 
-      {/* Incognito indicator — always visible while an incognito tab is active */}
-      {activeTab?.isIncognito && (
-        <View style={styles.incognitoBanner}>
-          <Text style={styles.incognitoBannerText}>🕵️ Incognito — screenshots blocked</Text>
-        </View>
-      )}
-
       {/* URL bar — hidden on Homepage, only shown while browsing a real page */}
       {activeTab?.url !== HOME_MARKER && (
         <View style={styles.urlBar}>
@@ -1079,59 +1136,57 @@ export default function App() {
               style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
             >
               <View style={[styles.homeScreen, nightMode && styles.homeScreenNight]}>
-                {homeUrlBarActive ? (
-                  <View style={[styles.homeUrlBar, nightMode && styles.homeUrlBarNight]}>
-                    <Ionicons name="search-outline" size={20} color={nightMode ? '#aaa' : '#666'} />
-                    <TextInput
-                      autoFocus
-                      style={[styles.homeUrlBarInput, nightMode && styles.homeSearchInputNight]}
-                      value={homeSearchInput}
-                      onChangeText={setHomeSearchInput}
-                      onSubmitEditing={openHomeSearch}
-                      placeholder="Search or type a URL"
-                      placeholderTextColor="#9a9a9a"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      returnKeyType="go"
-                    />
-                    <TouchableOpacity
-                      onPress={() => {
-                        setHomeUrlBarActive(false);
-                        setHomeSearchInput('');
-                      }}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    >
-                      <Ionicons name="close" size={22} color={nightMode ? '#aaa' : '#666'} />
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <>
-                    <View style={styles.homeHeaderRow}>
-                      <TouchableOpacity onPress={() => setHomeUrlBarActive(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                        <Text style={[styles.homeHeaderTitle, nightMode && styles.homeBrandNight]}>Homepage</Text>
+                <View style={styles.homeHeaderRow}>
+                  <TouchableOpacity onPress={() => setHomeUrlBarActive(true)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={[styles.homeHeaderTitle, nightMode && styles.homeBrandNight]}>Homepage</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.homeCenterWrap}>
+                  {homeUrlBarActive ? (
+                    <View style={[styles.homeUrlBar, nightMode && styles.homeUrlBarNight, { marginBottom: 0 }]}>
+                      <Ionicons name="search-outline" size={20} color={nightMode ? '#aaa' : '#666'} />
+                      <TextInput
+                        autoFocus
+                        style={[styles.homeUrlBarInput, nightMode && styles.homeSearchInputNight]}
+                        value={homeSearchInput}
+                        onChangeText={setHomeSearchInput}
+                        onSubmitEditing={openHomeSearch}
+                        placeholder="Search or type a URL"
+                        placeholderTextColor="#9a9a9a"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        returnKeyType="go"
+                      />
+                      <TouchableOpacity
+                        onPress={() => {
+                          setHomeUrlBarActive(false);
+                          setHomeSearchInput('');
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Ionicons name="close" size={22} color={nightMode ? '#aaa' : '#666'} />
                       </TouchableOpacity>
                     </View>
-
-                    <View style={styles.homeCenterWrap}>
-                      <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
-                        <TextInput
-                          style={[styles.homeSearchInputInner, nightMode && { color: '#fff' }]}
-                          value={homeSearchInput}
-                          onChangeText={setHomeSearchInput}
-                          onSubmitEditing={openHomeSearch}
-                          placeholder="Search or type a URL"
-                          placeholderTextColor={nightMode ? '#888' : '#9a9a9a'}
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          returnKeyType="go"
-                        />
-                        <TouchableOpacity style={styles.homeGoBtnInner} onPress={openHomeSearch}>
-                          <Text style={styles.homeGoBtnText}>Go</Text>
-                        </TouchableOpacity>
-                      </View>
+                  ) : (
+                    <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
+                      <TextInput
+                        style={[styles.homeSearchInputInner, nightMode && { color: '#fff' }]}
+                        value={homeSearchInput}
+                        onChangeText={setHomeSearchInput}
+                        onSubmitEditing={openHomeSearch}
+                        placeholder="Search or type a URL"
+                        placeholderTextColor={nightMode ? '#888' : '#9a9a9a'}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        returnKeyType="go"
+                      />
+                      <TouchableOpacity style={styles.homeGoBtnInner} onPress={openHomeSearch}>
+                        <Ionicons name="search" size={20} color={nightMode ? '#aaa' : '#5B5FEF'} />
+                      </TouchableOpacity>
                     </View>
-                  </>
-                )}
+                  )}
+                </View>
               </View>
             </View>
           ) : (
@@ -1158,7 +1213,10 @@ export default function App() {
                 }
                 onLoadStart={() => {
                   updateTab(tab.id, { loading: true });
-                  if (tab.id === activeTabId) setShowTldrButton(false);
+                  if (tab.id === activeTabId) {
+                    setShowTldrButton(false);
+                    setShowFillFormButton(false);
+                  }
                 }}
                 onLoadEnd={() => {
                   updateTab(tab.id, { loading: false });
@@ -1171,6 +1229,7 @@ export default function App() {
                   }
                   // Re-arm the TL;DR scroll watcher for the fresh page.
                   webviewRefs.current[tab.id]?.injectJavaScript(TLDR_WATCH_JS);
+                  webviewRefs.current[tab.id]?.injectJavaScript(FORM_DETECT_JS);
                 }}
                 onNavigationStateChange={(navState) => {
                   updateTab(tab.id, {
@@ -1211,6 +1270,19 @@ export default function App() {
       </Animated.View>
 
       {/* Floating "TL;DR" chip — appears once the user has scrolled deep into a long article */}
+      {showFillFormButton && (
+        <TouchableOpacity
+          style={[styles.tldrChip, { bottom: showTldrButton ? 150 : 90 }]}
+          onPress={() => {
+            setShowFillFormButton(false);
+            runAutofill();
+          }}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.tldrChipText}>📝 Fill form</Text>
+        </TouchableOpacity>
+      )}
+
       {showTldrButton && (
         <TouchableOpacity style={styles.tldrChip} onPress={runTldr} activeOpacity={0.85}>
           <Text style={styles.tldrChipText}>⚡ TL;DR</Text>
@@ -1270,11 +1342,10 @@ export default function App() {
                     else if (item.key === 'bookmarks') setShowBookmarks(true);
                     else if (item.key === 'history') setShowHistory(true);
                     else if (item.key === 'downloads') setShowDownloads(true);
-                    else if (item.key === 'incognito') openIncognitoTab();
+                    else if (item.key === 'incognito') toggleIncognito();
                     else if (item.key === 'share') shareCurrentPage();
                     else if (item.key === 'addBookmark') toggleBookmark();
                     else if (item.key === 'desktop') toggleDesktopMode();
-                    else if (item.key === 'autofillRun') runAutofill();
                     else if (item.key === 'autofillInfo') {
                       setAutofillDraft(autofillProfile);
                       setShowAutofillSettings(true);
@@ -1286,7 +1357,12 @@ export default function App() {
                     }
                   }}
                 >
-                  <Text style={styles.menuIcon}>
+                  <Text
+                    style={[
+                      styles.menuIcon,
+                      item.key === 'incognito' && isIncognitoOn && styles.menuIconActive,
+                    ]}
+                  >
                     {item.key === 'night' && nightMode ? '☀️' : item.key === 'desktop' && desktopMode ? '📱' : item.icon}
                   </Text>
                   <Text style={styles.menuLabel}>
@@ -1294,6 +1370,8 @@ export default function App() {
                       ? 'Day mode'
                       : item.key === 'desktop' && desktopMode
                       ? 'Mobile site'
+                      : item.key === 'incognito' && isIncognitoOn
+                      ? 'Exit incognito'
                       : item.label}
                   </Text>
                 </TouchableOpacity>
@@ -1345,15 +1423,6 @@ export default function App() {
               }}
             >
               <Text style={styles.floatingMenuText}>✨ Ask AI</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.floatingMenuItem}
-              onPress={() => {
-                setShowFloatingMenu(false);
-                runAutofill();
-              }}
-            >
-              <Text style={styles.floatingMenuText}>📝 Autofill form</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -2153,10 +2222,9 @@ const styles = StyleSheet.create({
   },
   homeSearchInputNight: { backgroundColor: '#222', borderColor: '#333', color: '#eee' },
   homeGoBtnInner: {
-    backgroundColor: '#5B5FEF',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 20,
+    backgroundColor: 'transparent',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   homeGoBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 
@@ -2174,6 +2242,16 @@ const styles = StyleSheet.create({
   menuGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   menuItem: { width: '20%', alignItems: 'center', marginBottom: 20 },
   menuIcon: { fontSize: 24, marginBottom: 6 },
+  menuIconActive: {
+    backgroundColor: '#5B5FEF',
+    color: '#fff',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    overflow: 'hidden',
+  },
   menuLabel: { fontSize: 11, color: '#333', textAlign: 'center' },
   menuCloseChevron: { alignItems: 'center', paddingVertical: 8 },
 
