@@ -10,7 +10,18 @@
     },
     "android": {
       "package": "com.ishwar.aibrowser",
-      "permissions": ["INTERNET"]
+      "permissions": ["INTERNET"],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": false,
+          "data": [
+            { "scheme": "http" },
+            { "scheme": "https" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "ios": {
       "bundleIdentifier": "com.ishwar.aibrowser"
