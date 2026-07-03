@@ -36,7 +36,6 @@ const HOME_URL = 'https://www.google.com';
 const HOME_MARKER = 'app://home';
 const HISTORY_KEY = 'history_v1';
 const BOOKMARKS_KEY = 'bookmarks_v1';
-const SHORTCUTS_KEY = 'shortcuts_v1';
 const AI_PROVIDER_KEY = 'ai_provider_v1';
 const ADMIN_UNLOCK_KEY = 'ai_admin_unlocked_v1';
 // ⚠️ Change this to your own secret. Only devices that enter this correctly
@@ -149,13 +148,8 @@ export default function App() {
   const [showMenu, setShowMenu] = useState(false);
   const [nightMode, setNightMode] = useState(false);
   const [desktopMode, setDesktopMode] = useState(false);
-  // Homepage shortcuts
-  const [shortcuts, setShortcuts] = useState([]);
-  const [editingShortcuts, setEditingShortcuts] = useState(false);
+  // Homepage — just a search box, no clutter
   const [homeSearchInput, setHomeSearchInput] = useState('');
-  const [showAddShortcut, setShowAddShortcut] = useState(false);
-  const [newShortcutTitle, setNewShortcutTitle] = useState('');
-  const [newShortcutUrl, setNewShortcutUrl] = useState('');
   // Floating draggable "inspect" button — works anywhere, over any page
   const [showFloatingMenu, setShowFloatingMenu] = useState(false);
   const [showAIPanel, setShowAIPanel] = useState(false);
@@ -193,8 +187,6 @@ export default function App() {
         if (storedBookmarks) setBookmarks(JSON.parse(storedBookmarks));
         const storedHistory = await AsyncStorage.getItem(HISTORY_KEY);
         if (storedHistory) setHistory(JSON.parse(storedHistory));
-        const storedShortcuts = await AsyncStorage.getItem(SHORTCUTS_KEY);
-        if (storedShortcuts) setShortcuts(JSON.parse(storedShortcuts));
         const storedAdmin = await AsyncStorage.getItem(ADMIN_UNLOCK_KEY);
         const adminUnlocked = storedAdmin === 'true';
         setIsAdmin(adminUnlocked);
@@ -244,7 +236,6 @@ export default function App() {
       // Close any open modal/sheet first
       if (showMenu) { setShowMenu(false); return true; }
       if (showFloatingMenu) { setShowFloatingMenu(false); return true; }
-      if (showAddShortcut) { setShowAddShortcut(false); return true; }
       if (showAdminPrompt) { setShowAdminPrompt(false); return true; }
       if (showAISettings) { setShowAISettings(false); return true; }
       if (showAIPanel) { setShowAIPanel(false); return true; }
@@ -286,7 +277,6 @@ export default function App() {
     tabs,
     showMenu,
     showFloatingMenu,
-    showAddShortcut,
     showAdminPrompt,
     showAISettings,
     showAIPanel,
@@ -396,30 +386,7 @@ export default function App() {
     await AsyncStorage.removeItem(HISTORY_KEY);
   };
 
-  // ---------- Homepage shortcuts ----------
-  const persistShortcuts = async (updated) => {
-    setShortcuts(updated);
-    await AsyncStorage.setItem(SHORTCUTS_KEY, JSON.stringify(updated));
-  };
-
-  const addShortcut = async (title, rawUrl) => {
-    if (!rawUrl?.trim()) return;
-    const url = normalizeUrl(rawUrl.trim());
-    await persistShortcuts([{ title: title?.trim() || url, url }, ...shortcuts]);
-  };
-
-  const removeShortcut = async (url) => {
-    await persistShortcuts(shortcuts.filter((s) => s.url !== url));
-  };
-
-  const submitAddShortcut = () => {
-    if (!newShortcutUrl.trim()) return;
-    addShortcut(newShortcutTitle, newShortcutUrl);
-    setNewShortcutTitle('');
-    setNewShortcutUrl('');
-    setShowAddShortcut(false);
-  };
-
+  // ---------- Homepage search ----------
   const openHomeSearch = () => {
     if (!homeSearchInput.trim()) return;
     const finalUrl = normalizeUrl(homeSearchInput);
@@ -644,32 +611,34 @@ export default function App() {
       <StatusBar style="dark" />
       <View style={{ height: TOP_PADDING, backgroundColor: '#fff' }} />
 
-      {/* URL bar */}
-      <View style={styles.urlBar}>
-        <TouchableOpacity onPress={goHome} style={styles.homeBtn}>
-          <Text style={styles.homeBtnText}>⌂</Text>
-        </TouchableOpacity>
-        <TextInput
-          style={styles.urlInput}
-          value={urlInput}
-          onChangeText={setUrlInput}
-          onSubmitEditing={navigate}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-          placeholder={activeTab?.url === HOME_MARKER ? 'Homepage' : 'Search or type a URL'}
-          placeholderTextColor="#9a9a9a"
-          returnKeyType="go"
-        />
-        <TouchableOpacity onPress={toggleBookmark} style={styles.starBtn}>
-          <Text style={[styles.starBtnText, isBookmarked && styles.starActive]}>
-            {isBookmarked ? '★' : '☆'}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={navigate} style={styles.goBtn}>
-          <Text style={styles.goBtnText}>Go</Text>
-        </TouchableOpacity>
-      </View>
+      {/* URL bar — hidden on Homepage, only shown while browsing a real page */}
+      {activeTab?.url !== HOME_MARKER && (
+        <View style={styles.urlBar}>
+          <TouchableOpacity onPress={goHome} style={styles.homeBtn}>
+            <Text style={styles.homeBtnText}>⌂</Text>
+          </TouchableOpacity>
+          <TextInput
+            style={styles.urlInput}
+            value={urlInput}
+            onChangeText={setUrlInput}
+            onSubmitEditing={navigate}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            placeholder="Search or type a URL"
+            placeholderTextColor="#9a9a9a"
+            returnKeyType="go"
+          />
+          <TouchableOpacity onPress={toggleBookmark} style={styles.starBtn}>
+            <Text style={[styles.starBtnText, isBookmarked && styles.starActive]}>
+              {isBookmarked ? '★' : '☆'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={navigate} style={styles.goBtn}>
+            <Text style={styles.goBtnText}>Go</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Progress bar */}
       <View style={styles.progressTrack}>
@@ -697,14 +666,12 @@ export default function App() {
             >
               <View style={styles.homeScreen}>
                 <View style={styles.homeLogoWrap}>
-                  <Text style={styles.homeLogoEmoji}>🅰️</Text>
-                  <Text style={styles.homeBrand}>AI Browser{'\n'}by Ishwar</Text>
+                  <Text style={styles.homeBrand} numberOfLines={1} adjustsFontSizeToFit>
+                    AI Browser by Ishwar
+                  </Text>
                 </View>
 
                 <View style={styles.homeSearchRow}>
-                  <TouchableOpacity style={styles.roundIconBtn} onPress={() => setShowAddShortcut(true)}>
-                    <Text style={styles.roundIconText}>+</Text>
-                  </TouchableOpacity>
                   <TextInput
                     style={styles.homeSearchInput}
                     value={homeSearchInput}
@@ -716,34 +683,9 @@ export default function App() {
                     autoCorrect={false}
                     returnKeyType="go"
                   />
-                  <TouchableOpacity style={styles.roundIconBtn} onPress={() => setEditingShortcuts((v) => !v)}>
-                    <Text style={styles.roundIconText}>−</Text>
+                  <TouchableOpacity style={styles.homeGoBtn} onPress={openHomeSearch}>
+                    <Text style={styles.homeGoBtnText}>Go</Text>
                   </TouchableOpacity>
-                </View>
-
-                <View style={styles.shortcutsGrid}>
-                  {shortcuts.map((s) => (
-                    <TouchableOpacity
-                      key={s.url}
-                      style={styles.shortcutTile}
-                      onPress={() =>
-                        editingShortcuts
-                          ? removeShortcut(s.url)
-                          : (updateTab(tab.id, { url: s.url, loading: true }), setUrlInput(s.url))
-                      }
-                    >
-                      <Text style={styles.shortcutIcon}>{editingShortcuts ? '✕' : '🌐'}</Text>
-                      <Text numberOfLines={1} style={styles.shortcutLabel}>
-                        {s.title}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                  {!editingShortcuts && (
-                    <TouchableOpacity style={styles.shortcutTile} onPress={() => setShowAddShortcut(true)}>
-                      <Text style={[styles.shortcutIcon, { fontSize: 22 }]}>+</Text>
-                      <Text style={styles.shortcutLabel}>Add</Text>
-                    </TouchableOpacity>
-                  )}
                 </View>
               </View>
             </View>
@@ -923,44 +865,6 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Add shortcut modal — for the "+" button on Homepage */}
-      <Modal
-        visible={showAddShortcut}
-        animationType="fade"
-        transparent
-        onRequestClose={() => setShowAddShortcut(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Add shortcut</Text>
-            <TextInput
-              style={styles.apiKeyInput}
-              value={newShortcutTitle}
-              onChangeText={setNewShortcutTitle}
-              placeholder="Name (optional)"
-              placeholderTextColor="#9a9a9a"
-            />
-            <TextInput
-              style={styles.apiKeyInput}
-              value={newShortcutUrl}
-              onChangeText={setNewShortcutUrl}
-              placeholder="Website URL"
-              placeholderTextColor="#9a9a9a"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              onSubmitEditing={submitAddShortcut}
-            />
-            <TouchableOpacity onPress={submitAddShortcut} style={styles.newTabBtn}>
-              <Text style={styles.newTabBtnText}>Add</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setShowAddShortcut(false)} style={styles.closeModalBtn}>
-              <Text style={styles.closeModalBtnText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
       {/* Tab switcher modal */}
       <Modal visible={showTabSwitcher} animationType="slide" transparent onRequestClose={() => setShowTabSwitcher(false)}>
         <View style={styles.modalOverlay}>
@@ -1073,11 +977,11 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* AI panel */}
-      <Modal visible={showAIPanel} animationType="slide" transparent onRequestClose={() => setShowAIPanel(false)}>
+      {/* AI panel — floating card, not a bottom sheet */}
+      <Modal visible={showAIPanel} animationType="fade" transparent onRequestClose={() => setShowAIPanel(false)}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}
+          style={styles.aiOverlay}
         >
           <View style={styles.aiCard}>
             <View style={styles.aiHeaderRow}>
@@ -1368,12 +1272,24 @@ const styles = StyleSheet.create({
     padding: 18,
     maxHeight: '78%',
   },
+  // AI panel floats as a card over the page instead of docking to the bottom edge
+  aiOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
   aiCard: {
     backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderRadius: 22,
     padding: 18,
-    height: '72%',
+    width: '100%',
+    maxHeight: '75%',
+    ...Platform.select({
+      android: { elevation: 14 },
+      ios: { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } },
+    }),
   },
   aiHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   settingsGearBtn: { padding: 6 },
@@ -1453,23 +1369,12 @@ const styles = StyleSheet.create({
   },
 
   // ---- Homepage (native, Via-style) ----
-  homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 60, paddingHorizontal: 20 },
-  homeLogoWrap: { alignItems: 'center', marginBottom: 28 },
-  homeLogoEmoji: { fontSize: 56, marginBottom: 8 },
-  homeBrand: { fontSize: 15, fontWeight: '700', color: '#333', textAlign: 'center', lineHeight: 20 },
+  homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 90, paddingHorizontal: 20 },
+  homeLogoWrap: { alignItems: 'center', marginBottom: 32, width: '100%' },
+  homeBrand: { fontSize: 18, fontWeight: '700', color: '#333', textAlign: 'center' },
   homeSearchRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
-  roundIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e9e9ec',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  roundIconText: { fontSize: 20, color: '#555', fontWeight: '600' },
   homeSearchInput: {
     flex: 1,
-    marginHorizontal: 10,
     backgroundColor: '#f1f1f3',
     borderRadius: 24,
     borderWidth: 1,
@@ -1479,25 +1384,15 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#111',
   },
-  shortcutsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginTop: 26,
-    width: '100%',
-    justifyContent: 'flex-start',
+  homeGoBtn: {
+    marginLeft: 10,
+    backgroundColor: '#5B5FEF',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 22,
   },
-  shortcutTile: { width: '25%', alignItems: 'center', marginBottom: 18 },
-  shortcutIcon: {
-    fontSize: 22,
-    width: 52,
-    height: 52,
-    lineHeight: 52,
-    textAlign: 'center',
-    backgroundColor: '#f1f1f3',
-    borderRadius: 14,
-    overflow: 'hidden',
-  },
-  shortcutLabel: { fontSize: 11, color: '#555', marginTop: 4, maxWidth: 60, textAlign: 'center' },
+  homeGoBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+
 
   // ---- Hamburger grid menu ----
   menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
@@ -1523,16 +1418,12 @@ const styles = StyleSheet.create({
     width: 54,
     height: 54,
     borderRadius: 27,
-    backgroundColor: '#5B5FEF',
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
-    ...Platform.select({
-      android: { elevation: 10 },
-      ios: { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 } },
-    }),
     zIndex: 999,
   },
-  floatingBtnText: { fontSize: 22 },
+  floatingBtnText: { fontSize: 30 },
   floatingMenuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' },
   floatingMenuCard: {
     position: 'absolute',
