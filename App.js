@@ -30,17 +30,12 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as ScreenCapture from 'expo-screen-capture';
+import * as MediaLibrary from 'expo-media-library';
 import { captureRef } from 'react-native-view-shot';
-// ⚠️ Needs: expo install expo-clipboard expo-file-system expo-sharing expo-screen-capture react-native-view-shot
 
-// ⚠️ Point this to your deployed backend (see api/ask.js in this project)
 const AI_ENDPOINT = 'https://ai-browser-by-iswar.vercel.app/api/ask';
 const GROQ_DIRECT_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
-// Groq retired the old llama-3.x chat models — openai/gpt-oss-20b is the current
-// fast general-purpose default. Users can switch models or add their own below.
 const DEFAULT_MODEL = 'openai/gpt-oss-20b';
-// Curated list shown in the model switcher. "Custom" lets the user type any
-// other Groq model ID (e.g. a brand-new one Groq adds later) without an app update.
 const KNOWN_MODELS = [
   { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', hint: 'Fast, great default' },
   { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B', hint: 'Flagship, higher quality' },
@@ -51,7 +46,6 @@ const KNOWN_MODELS = [
 ];
 
 const HOME_URL = 'https://www.google.com';
-// Sentinel "url" that means: show the native Homepage screen instead of a WebView.
 const HOME_MARKER = 'app://home';
 const HISTORY_KEY = 'history_v1';
 const BOOKMARKS_KEY = 'bookmarks_v1';
@@ -59,14 +53,13 @@ const DOWNLOADS_KEY = 'downloads_v1';
 const AI_PROVIDER_KEY = 'ai_provider_v1';
 const ADMIN_UNLOCK_KEY = 'ai_admin_unlocked_v1';
 const AUTOFILL_PROFILE_KEY = 'autofill_profile_v1';
-// ⚠️ Change this to your own secret. Only devices that enter this correctly
-// can use the app's shared "Default" backend — everyone else must add their own key.
+const STORAGE_LOCATION_KEY = 'storage_location_v1';
+const AD_BLOCKER_KEY = 'ad_block_v1';
 const ADMIN_PASSCODE = 'joysiddhi123';
 const MAX_HISTORY = 200;
 const TOP_PADDING = Platform.OS === 'android' ? (RNStatusBar.currentHeight || 24) : 0;
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
-const DESKTOP_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 let tabIdCounter = 1;
 const makeTab = (url = HOME_MARKER, opts = {}) => ({
@@ -80,58 +73,44 @@ const makeTab = (url = HOME_MARKER, opts = {}) => ({
   thumbnail: null,
 });
 
-// Grid menu items shown when the hamburger (☰) button is tapped — Via-style bottom sheet.
 const MENU_ITEMS_DEF = [
   { key: 'night', icon: '🌙', label: 'Night mode' },
   { key: 'reload', icon: '⟳', label: 'Reload' },
   { key: 'bookmarks', icon: '📑', label: 'Bookmarks' },
   { key: 'history', icon: '🕘', label: 'History' },
   { key: 'downloads', icon: '⬇️', label: 'Downloads' },
+  { key: 'adblock', icon: '🛡️', label: 'Ad Block' },
   { key: 'incognito', icon: '🕵️', label: 'Incognito' },
   { key: 'share', icon: '🔗', label: 'Share' },
   { key: 'addBookmark', icon: '⭐', label: 'Add bookmark' },
   { key: 'desktop', icon: '🖥️', label: 'Desktop site' },
   { key: 'autofillInfo', icon: '🪪', label: 'My info' },
-  { key: 'settings', icon: '⚙️', label: 'Settings' },
+  { key: 'storageSettings', icon: '⚙️', label: 'Settings' }, 
 ];
 
-// AI is only triggered from the floating 🔍 button now (see floatingMenu modal below),
-// so there's no mode-picker chip row anymore — just 'explain' (auto) and 'ask' (free text).
 const AI_MODES = {
   ask: { hint: 'Thinking…' },
   explain: { hint: 'Explaining the page…' },
+  tldr: { hint: 'Summarizing…' },
 };
 
-// Builds the same style of prompt the backend (api/ask.js) uses, so a
-// user-supplied Groq key produces consistent results when calling Groq directly.
 function buildMessages(mode, question, pageContext, pageUrl) {
   const context = (pageContext || '').slice(0, 6000);
   if (mode === 'explain') {
     return [
       { role: 'system', content: 'You explain web pages in a clear, mobile-friendly way for a general audience.' },
-      {
-        role: 'user',
-        content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nExplain what this page is about in a detailed, mobile-friendly breakdown.`,
-      },
+      { role: 'user', content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nExplain what this page is about in a detailed, mobile-friendly breakdown.` },
     ];
   }
-  if (mode === 'find_answers') {
+  if (mode === 'tldr') {
     return [
-      {
-        role: 'system',
-        content:
-          'You scan web page text for FAQs, quiz questions, or form questions and answer each one. Respond ONLY with a JSON array like [{"question":"...","answer":"..."}]. No prose, no markdown fences.',
-      },
-      { role: 'user', content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}` },
+      { role: 'system', content: 'You write extremely short TL;DR summaries of long web pages for a mobile reader, as 3-5 crisp bullet points, no preamble.' },
+      { role: 'user', content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nGive a TL;DR summary as 3-5 short bullet points.` },
     ];
   }
-  // ask
   return [
     { role: 'system', content: 'You answer questions about the current web page the user is viewing, using the provided page text as context.' },
-    {
-      role: 'user',
-      content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nQuestion: ${question || 'Summarize this page briefly.'}`,
-    },
+    { role: 'user', content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nQuestion: ${question || 'Summarize this page briefly.'}` },
   ];
 }
 
@@ -139,179 +118,161 @@ async function callGroqDirect(apiKey, model, mode, question, pageContext, pageUr
   const messages = buildMessages(mode, question, pageContext, pageUrl);
   const res = await fetch(GROQ_DIRECT_ENDPOINT, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model || DEFAULT_MODEL,
-      messages,
-      temperature: 0.4,
-    }),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: model || DEFAULT_MODEL, messages, temperature: 0.4 }),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json?.error?.message || 'Groq request failed');
-  const content = json?.choices?.[0]?.message?.content || '';
-  if (mode === 'find_answers') {
-    const cleaned = content.replace(/```json|```/g, '').trim();
-    try {
-      return { items: JSON.parse(cleaned) };
-    } catch (e) {
-      return { items: [] };
-    }
-  }
-  return { answer: content };
+  return { answer: json?.choices?.[0]?.message?.content || '' };
 }
 
 export default function App() {
   const [tabs, setTabs] = useState([makeTab()]);
   const [activeTabId, setActiveTabId] = useState(tabs[0].id);
   const [urlInput, setUrlInput] = useState('');
-  const [showTabSwitcher, setShowTabSwitcher] = useState(false);
-  // Hamburger grid menu (Via-style bottom sheet)
-  const [showMenu, setShowMenu] = useState(false);
   const [nightMode, setNightMode] = useState(false);
   const [desktopMode, setDesktopMode] = useState(false);
-  // Homepage — just a search box, no clutter
   const [homeSearchInput, setHomeSearchInput] = useState('');
-  const homeSearchInputRef = useRef(null);
-  // When true, "Homepage" label is replaced by a focused URL/search input bar
   const [homeUrlBarActive, setHomeUrlBarActive] = useState(false);
-  // Floating draggable "inspect" button — works anywhere, over any page
   const [showFloatingMenu, setShowFloatingMenu] = useState(false);
-  const [showAIPanel, setShowAIPanel] = useState(false);
-  const [aiMode, setAiMode] = useState('ask');
-  const [aiQuestion, setAiQuestion] = useState('');
-  const [aiAnswer, setAiAnswer] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState(false);
   const [bookmarks, setBookmarks] = useState([]);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [downloads, setDownloads] = useState([]);
   const [showDownloads, setShowDownloads] = useState(false);
-  // Unified "Library" page (Bookmarks / History / Saved pages tabs) — replaces the
-  // three separate bottom-sheet modals with one full-page slide-in view.
   const [librarySearch, setLibrarySearch] = useState('');
   const [libraryMounted, setLibraryMounted] = useState(false);
   const libraryPanelAnim = useRef(new Animated.Value(SCREEN_W)).current;
 
-  // ---------- AI provider settings ----------
-  const [aiProvider, setAiProvider] = useState({ mode: 'none', apiKey: '', model: DEFAULT_MODEL }); // 'default' | 'custom' | 'none'
+  // --- Core States for New Features ---
+  const [storageLocation, setStorageLocation] = useState('phone'); 
+  const [adBlockerEnabled, setAdBlockerEnabled] = useState(true);
+  const [activeDownload, setActiveDownload] = useState(null);
+  const downloadToastAnim = useRef(new Animated.Value(100)).current;
+
+  // --- Modals Animation Drivers ---
+  const [showTabSwitcher, setShowTabSwitcher] = useState(false);
+  const [tabSwitcherMounted, setTabSwitcherMounted] = useState(false);
+  const tabSwitcherAnim = useRef(new Animated.Value(SCREEN_H)).current;
+
+  const [showMenu, setShowMenu] = useState(false);
+  const [menuMounted, setMenuMounted] = useState(false);
+  const menuAnim = useRef(new Animated.Value(SCREEN_H)).current;
+
+  const [showStorageModal, setShowStorageModal] = useState(false);
+  const [storageMounted, setStorageMounted] = useState(false);
+  const storageAnim = useRef(new Animated.Value(SCREEN_H)).current;
+
+  const [showAIPanel, setShowAIPanel] = useState(false);
+  const [aiPanelMounted, setAiPanelMounted] = useState(false);
+  const aiPanelAnim = useRef(new Animated.Value(SCREEN_H)).current;
+  const [aiMode, setAiMode] = useState('ask');
+  const [aiQuestion, setAiQuestion] = useState('');
+  const [aiAnswer, setAiAnswer] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState(false);
+
+  const [aiProvider, setAiProvider] = useState({ mode: 'none', apiKey: '', model: DEFAULT_MODEL });
   const [showAISettings, setShowAISettings] = useState(false);
+  const [aiSettingsMounted, setAiSettingsMounted] = useState(false);
+  const aiSettingsAnim = useRef(new Animated.Value(SCREEN_H)).current;
   const [customKeyInput, setCustomKeyInput] = useState('');
   const [customModelInput, setCustomModelInput] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [showAdminPrompt, setShowAdminPrompt] = useState(false);
+  const [adminMounted, setAdminMounted] = useState(false);
+  const adminAnim = useRef(new Animated.Value(SCREEN_H)).current;
   const [adminPasscodeInput, setAdminPasscodeInput] = useState('');
   const [adminError, setAdminError] = useState(false);
 
-  // ---------- Autofill profile (address / phone / email etc.) ----------
-  // Intentionally ONLY holds plain contact/address fields — never anything that
-  // looks like a quiz/exam answer — and autofill only ever writes into fields
-  // that are clearly recognized as that same kind of field (see runAutofill).
   const [autofillProfile, setAutofillProfile] = useState({
     fullName: '', email: '', phone: '', address: '', city: '', state: '', pincode: '', country: '',
   });
   const [showAutofillSettings, setShowAutofillSettings] = useState(false);
+  const [autofillMounted, setAutofillMounted] = useState(false);
+  const autofillAnim = useRef(new Animated.Value(SCREEN_H)).current;
   const [autofillDraft, setAutofillDraft] = useState(autofillProfile);
 
-  const webviewRefs = useRef({}); // { [tabId]: WebView ref }
-  const viewShotRefs = useRef({}); // { [tabId]: View ref } — for tab preview thumbnails
+  const webviewRefs = useRef({});
+  const viewShotRefs = useRef({});
   const progressAnim = useRef(new Animated.Value(0)).current;
-  // Floating "Fill form" chip — shown automatically once a page with a form is detected.
+  const [showTldrButton, setShowTldrButton] = useState(false);
   const [showFillFormButton, setShowFillFormButton] = useState(false);
+  const touchStartX = useRef(0);
+  const touchStartY = useRef(0);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const isBookmarked = activeTab && bookmarks.some((b) => b.url === activeTab.url);
-
   const showLibrary = showBookmarks || showHistory || showDownloads;
   const libraryTab = showBookmarks ? 'bookmarks' : showDownloads ? 'downloads' : 'history';
-  const closeLibrary = () => {
-    setShowBookmarks(false);
-    setShowHistory(false);
-    setShowDownloads(false);
-    setLibrarySearch('');
-  };
-  const switchLibraryTab = (tab) => {
-    setShowBookmarks(tab === 'bookmarks');
-    setShowHistory(tab === 'history');
-    setShowDownloads(tab === 'downloads');
-    setLibrarySearch('');
+
+  const AD_BLOCK_JS = `
+    (function() {
+      var selectors = ['div[id^="google_ads"]', 'ins.adsbygoogle', 'div[class*="ad-box"]', 'div[class*="ad-container"]', 'div[class*="advertising"]', 'iframe[src*="doubleclick"]', 'div[id*="ad-slot"]', 'img[src*="banner"]', 'div[class*="native-ad"]'];
+      function purgeAds() {
+        selectors.forEach(function(sel) {
+          var elements = document.querySelectorAll(sel);
+          for (var i = 0; i < elements.length; i++) { elements[i].style.setProperty('display', 'none', 'important'); elements[i].remove(); }
+        });
+      }
+      purgeAds(); setInterval(purgeAds, 1000);
+    })(); true;
+  `;
+
+  const animateModal = (animDrive, toValue, duration, onComplete) => {
+    Animated.timing(animDrive, {
+      toValue,
+      duration,
+      easing: toValue === 0 ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(onComplete);
   };
 
-  // Smooth slide-in-from-right animation for the Library page (kept mounted a
-  // moment longer on close so the exit animation is visible).
+  useEffect(() => {
+    if (showTabSwitcher) { setTabSwitcherMounted(true); animateModal(tabSwitcherAnim, 0, 280); }
+    else if (tabSwitcherMounted) { animateModal(tabSwitcherAnim, SCREEN_H, 240, () => setTabSwitcherMounted(false)); }
+  }, [showTabSwitcher]);
+
+  useEffect(() => {
+    if (showMenu) { setMenuMounted(true); animateModal(menuAnim, 0, 280); }
+    else if (menuMounted) { animateModal(menuAnim, SCREEN_H, 240, () => setMenuMounted(false)); }
+  }, [showMenu]);
+
+  useEffect(() => {
+    if (showStorageModal) { setStorageMounted(true); animateModal(storageAnim, 0, 280); }
+    else if (storageMounted) { animateModal(storageAnim, SCREEN_H, 240, () => setStorageMounted(false)); }
+  }, [showStorageModal]);
+
+  useEffect(() => {
+    if (showAIPanel) { setAiPanelMounted(true); animateModal(aiPanelAnim, 0, 300); }
+    else if (aiPanelMounted) { animateModal(aiPanelAnim, SCREEN_H, 250, () => setAiPanelMounted(false)); }
+  }, [showAIPanel]);
+
+  useEffect(() => {
+    if (showAISettings) { setAiSettingsMounted(true); animateModal(aiSettingsAnim, 0, 280); }
+    else if (aiSettingsMounted) { animateModal(aiSettingsAnim, SCREEN_H, 240, () => setAiSettingsMounted(false)); }
+  }, [showAISettings]);
+
+  useEffect(() => {
+    if (showAutofillSettings) { setAutofillMounted(true); animateModal(autofillAnim, 0, 300); }
+    else if (autofillMounted) { animateModal(autofillAnim, SCREEN_H, 250, () => setAutofillMounted(false)); }
+  }, [showAutofillSettings]);
+
+  useEffect(() => {
+    if (showAdminPrompt) { setAdminMounted(true); animateModal(adminAnim, 0, 280); }
+    else if (adminMounted) { animateModal(adminAnim, SCREEN_H, 240, () => setAdminMounted(false)); }
+  }, [showAdminPrompt]);
+
   useEffect(() => {
     if (showLibrary) {
       setLibraryMounted(true);
-      requestAnimationFrame(() => {
-        Animated.timing(libraryPanelAnim, {
-          toValue: 0,
-          duration: 280,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start();
-      });
+      Animated.timing(libraryPanelAnim, { toValue: 0, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
     } else if (libraryMounted) {
-      Animated.timing(libraryPanelAnim, {
-        toValue: SCREEN_W,
-        duration: 220,
-        easing: Easing.in(Easing.cubic),
-        useNativeDriver: true,
-      }).start(() => setLibraryMounted(false));
+      Animated.timing(libraryPanelAnim, { toValue: SCREEN_W, duration: 220, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(() => setLibraryMounted(false));
     }
   }, [showLibrary]);
 
-  const formatDateLabel = (ts) => {
-    const d = new Date(ts);
-    const today = new Date();
-    const yest = new Date();
-    yest.setDate(today.getDate() - 1);
-    const sameDay = (a, b) =>
-      a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-    if (sameDay(d, today)) return 'Today';
-    if (sameDay(d, yest)) return 'Yesterday';
-    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: '2-digit' });
-  };
-
-  // Builds a flat [{type:'header'|'item', ...}] list for the active library tab,
-  // grouped by date (History/Downloads) and filtered by the search box.
-  const buildLibraryRows = () => {
-    const q = librarySearch.trim().toLowerCase();
-    const matches = (title, url) =>
-      !q || (title || '').toLowerCase().includes(q) || (url || '').toLowerCase().includes(q);
-
-    if (libraryTab === 'bookmarks') {
-      return bookmarks.filter((b) => matches(b.title, b.url)).map((b, i) => ({ type: 'item', kind: 'bookmarks', key: `b${i}`, data: b }));
-    }
-
-    const source = libraryTab === 'downloads' ? downloads : history;
-    const filtered = source.filter((d) => matches(d.title || d.name, d.url));
-    const rows = [];
-    let lastLabel = null;
-    filtered.forEach((item, i) => {
-      const label = formatDateLabel(item.ts);
-      if (label !== lastLabel) {
-        rows.push({ type: 'header', key: `h${i}`, label });
-        lastLabel = label;
-      }
-      rows.push({ type: 'item', kind: libraryTab, key: `i${i}`, data: item });
-    });
-    return rows;
-  };
-
-  // ---------- Block screenshots/screen-recording while an incognito tab is active ----------
-  useEffect(() => {
-    if (activeTab?.isIncognito) {
-      ScreenCapture.preventScreenCaptureAsync().catch(() => {});
-    } else {
-      ScreenCapture.allowScreenCaptureAsync().catch(() => {});
-    }
-  }, [activeTab?.isIncognito]);
-
-  // ---------- Persisted data on boot ----------
   useEffect(() => {
     (async () => {
       try {
@@ -322,62 +283,63 @@ export default function App() {
         const storedDownloads = await AsyncStorage.getItem(DOWNLOADS_KEY);
         if (storedDownloads) setDownloads(JSON.parse(storedDownloads));
         const storedAdmin = await AsyncStorage.getItem(ADMIN_UNLOCK_KEY);
-        const adminUnlocked = storedAdmin === 'true';
-        setIsAdmin(adminUnlocked);
-
+        setIsAdmin(storedAdmin === 'true');
+        const storedLocation = await AsyncStorage.getItem(STORAGE_LOCATION_KEY);
+        if (storedLocation) setStorageLocation(storedLocation);
+        const storedAdBlock = await AsyncStorage.getItem(AD_BLOCKER_KEY);
+        if (storedAdBlock !== null) setAdBlockerEnabled(storedAdBlock === 'true');
         const storedProvider = await AsyncStorage.getItem(AI_PROVIDER_KEY);
         if (storedProvider) {
           const parsed = JSON.parse(storedProvider);
-          const model = parsed.model || DEFAULT_MODEL;
-          // Safety: if this device isn't admin-unlocked, never allow 'default' mode
-          // even if it was somehow saved before (e.g. app reinstalled data restore).
-          if (parsed.mode === 'default' && !adminUnlocked) {
-            setAiProvider({ mode: 'none', apiKey: parsed.apiKey || '', model });
-          } else {
-            setAiProvider({ ...parsed, model });
-          }
-          setCustomKeyInput(parsed.apiKey || '');
-          setCustomModelInput(model);
+          setAiProvider({ ...parsed, model: parsed.model || DEFAULT_MODEL });
         }
-
         const storedProfile = await AsyncStorage.getItem(AUTOFILL_PROFILE_KEY);
-        if (storedProfile) {
-          const parsedProfile = JSON.parse(storedProfile);
-          setAutofillProfile(parsedProfile);
-          setAutofillDraft(parsedProfile);
-        }
-
-      } catch (e) {
-        // ignore corrupt storage
-      }
+        if (storedProfile) setAutofillProfile(JSON.parse(storedProfile));
+      } catch (e) {}
     })();
   }, []);
 
-  // ---------- Loading progress bar ----------
+  const closeLibrary = () => { setShowBookmarks(false); setShowHistory(false); setShowDownloads(false); setLibrarySearch(''); };
+  const switchLibraryTab = (tab) => { setShowBookmarks(tab === 'bookmarks'); setShowHistory(tab === 'history'); setShowDownloads(tab === 'downloads'); setLibrarySearch(''); };
+
+  const formatDateLabel = (ts) => {
+    const d = new Date(ts); const today = new Date(); const yest = new Date(); yest.setDate(today.getDate() - 1);
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (sameDay(d, today)) return 'Today'; if (sameDay(d, yest)) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: '2-digit' });
+  };
+
+  const buildLibraryRows = () => {
+    const q = librarySearch.trim().toLowerCase();
+    const matches = (title, url) => !q || (title || '').toLowerCase().includes(q) || (url || '').toLowerCase().includes(q);
+    if (libraryTab === 'bookmarks') return bookmarks.filter((b) => matches(b.title, b.url)).map((b, i) => ({ type: 'item', kind: 'bookmarks', key: `b${i}`, data: b }));
+    const source = libraryTab === 'downloads' ? downloads : history;
+    const filtered = source.filter((d) => matches(d.title || d.name, d.url));
+    const rows = []; let lastLabel = null;
+    filtered.forEach((item, i) => {
+      const label = formatDateLabel(item.ts);
+      if (label !== lastLabel) { rows.push({ type: 'header', key: `h${i}`, label }); lastLabel = label; }
+      rows.push({ type: 'item', kind: libraryTab, key: `i${i}`, data: item });
+    });
+    return rows;
+  };
+
+  useEffect(() => {
+    if (activeTab?.isIncognito) ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+    else ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+  }, [activeTab?.isIncognito]);
+
   useEffect(() => {
     if (activeTab?.loading) {
       progressAnim.setValue(0);
-      Animated.timing(progressAnim, {
-        toValue: 0.8,
-        duration: 1400,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: false,
-      }).start();
+      Animated.timing(progressAnim, { toValue: 0.8, duration: 1400, easing: Easing.out(Easing.quad), useNativeDriver: false }).start();
     } else {
-      Animated.timing(progressAnim, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: false,
-      }).start(() => progressAnim.setValue(0));
+      Animated.timing(progressAnim, { toValue: 1, duration: 200, useNativeDriver: false }).start(() => progressAnim.setValue(0));
     }
   }, [activeTab?.loading, activeTabId]);
 
-  // ---------- Hardware back button (Android) ----------
-  // Fixes: pressing back used to close the whole app instead of going to the
-  // previous page, and never asked for confirmation before exiting.
   useEffect(() => {
     const backAction = () => {
-      // Close any open modal/sheet first
       if (showMenu) { setShowMenu(false); return true; }
       if (showFloatingMenu) { setShowFloatingMenu(false); return true; }
       if (showAdminPrompt) { setShowAdminPrompt(false); return true; }
@@ -386,1849 +348,659 @@ export default function App() {
       if (showAIPanel) { setShowAIPanel(false); return true; }
       if (showTabSwitcher) { setShowTabSwitcher(false); return true; }
       if (showLibrary) { closeLibrary(); return true; }
-
-      // On a real webpage with history → go back inside the page
-      if (activeTab && activeTab.url !== HOME_MARKER && activeTab.canGoBack) {
-        webviewRefs.current[activeTabId]?.goBack();
-        return true;
-      }
-
-      // On a webpage with no more history → drop back to the Homepage
-      if (activeTab && activeTab.url !== HOME_MARKER) {
-        goHome();
-        return true;
-      }
-
-      // Already on Homepage, more than one tab open → close this tab
-      if (tabs.length > 1) {
-        closeTab(activeTabId);
-        return true;
-      }
-
-      // Homepage + only tab left → confirm before exiting
-      Alert.alert('Exit AI Browser?', 'Are you zure ?', [
+      if (activeTab && activeTab.url !== HOME_MARKER && activeTab.canGoBack) { webviewRefs.current[activeTabId]?.goBack(); return true; }
+      if (activeTab && activeTab.url !== HOME_MARKER) { goHome(); return true; }
+      if (tabs.length > 1) { closeTab(activeTabId); return true; }
+      Alert.alert('Exit AI Browser?', 'Kya aap app band karna chahte hain?', [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Exit', style: 'destructive', onPress: () => BackHandler.exitApp() },
       ]);
       return true;
     };
-
     const sub = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => sub.remove();
-  }, [
-    activeTab,
-    activeTabId,
-    tabs,
-    showMenu,
-    showFloatingMenu,
-    showAdminPrompt,
-    showAutofillSettings,
-    showAISettings,
-    showAIPanel,
-    showTabSwitcher,
-    showLibrary,
-  ]);
+  }, [activeTab, activeTabId, tabs, showMenu, showFloatingMenu, showAdminPrompt, showAutofillSettings, showAISettings, showAIPanel, showTabSwitcher, showLibrary]);
 
-  // ---------- Tab helpers ----------
-  const updateTab = (id, patch) => {
-    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  };
-
-  // Snapshots the currently-mounted tab view for the tab-switcher grid preview.
-  // Safe to call anytime — silently no-ops if the tab isn't mounted or capture fails
-  // (e.g. right after a fresh WebView remount).
+  const updateTab = (id, patch) => { setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))); };
+  
   const captureTabThumbnail = async (id) => {
     try {
-      const node = viewShotRefs.current[id];
-      if (!node) return;
+      const node = viewShotRefs.current[id]; if (!node) return;
       const uri = await captureRef(node, { format: 'jpg', quality: 0.4, width: 300 });
       updateTab(id, { thumbnail: uri });
-    } catch (e) {
-      // ignore — thumbnail just stays blank/placeholder
-    }
+    } catch (e) {}
   };
 
   const addTab = (url = HOME_MARKER, opts = {}) => {
-    const newTab = makeTab(url, opts);
-    setTabs((prev) => [...prev, newTab]);
-    setActiveTabId(newTab.id);
-    setUrlInput(newTab.url === HOME_MARKER ? '' : newTab.url);
-    setShowTabSwitcher(false);
+    const newTab = makeTab(url, opts); setTabs((prev) => [...prev, newTab]); setActiveTabId(newTab.id);
+    setUrlInput(newTab.url === HOME_MARKER ? '' : newTab.url); setShowTabSwitcher(false);
   };
 
   const closeTab = (id) => {
     setTabs((prev) => {
       const filtered = prev.filter((t) => t.id !== id);
-      if (filtered.length === 0) {
-        const fresh = makeTab();
-        setActiveTabId(fresh.id);
-        setUrlInput(fresh.url);
-        return [fresh];
-      }
-      if (id === activeTabId) {
-        const next = filtered[filtered.length - 1];
-        setActiveTabId(next.id);
-        setUrlInput(next.url);
-      }
+      if (filtered.length === 0) { const fresh = makeTab(); setActiveTabId(fresh.id); setUrlInput(fresh.url); return [fresh]; }
+      if (id === activeTabId) { const next = filtered[filtered.length - 1]; setActiveTabId(next.id); setUrlInput(next.url); }
       return filtered;
     });
-    delete webviewRefs.current[id];
-    delete viewShotRefs.current[id];
+    delete webviewRefs.current[id]; delete viewShotRefs.current[id];
   };
 
-  const switchTab = (id) => {
-    // Snapshot the tab we're leaving so its grid preview stays fresh.
+  const handleAddNewTabSmoothly = () => { setShowTabSwitcher(false); setTimeout(() => { addTab(); }, 250); };
+  const handleSwitchTabSmoothly = (id) => {
     if (activeTabId !== id) captureTabThumbnail(activeTabId);
-    setActiveTabId(id);
-    const tab = tabs.find((t) => t.id === id);
-    if (tab) setUrlInput(tab.url === HOME_MARKER ? '' : tab.url);
     setShowTabSwitcher(false);
-    // Re-apply night mode to whichever tab we just switched into, since each
-    // WebView's DOM is independent — the injected style only lives on the tab it
-    // was injected into.
-    if (tab && tab.url !== HOME_MARKER) {
-      setTimeout(() => {
-        webviewRefs.current[id]?.injectJavaScript(buildNightModeJS(nightMode));
-      }, 50);
-    }
+    setTimeout(() => {
+      setActiveTabId(id); setShowTldrButton(false); const tab = tabs.find((t) => t.id === id);
+      if (tab) setUrlInput(tab.url === HOME_MARKER ? '' : tab.url);
+      if (tab && tab.url !== HOME_MARKER) { webviewRefs.current[id]?.injectJavaScript(buildNightModeJS(nightMode)); }
+    }, 250);
   };
 
-  // ---------- Navigation ----------
   const normalizeUrl = (input) => {
-    const trimmed = input.trim();
-    if (!trimmed) return HOME_URL;
+    const trimmed = input.trim(); if (!trimmed) return HOME_URL;
     const looksLikeUrl = /^https?:\/\//i.test(trimmed) || /^([\w-]+\.)+[a-z]{2,}(:\d+)?(\/.*)?$/i.test(trimmed);
-    if (looksLikeUrl) {
-      return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-    }
-    return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+    return looksLikeUrl ? (/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`) : `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
   };
 
-  const navigate = () => {
-    const finalUrl = normalizeUrl(urlInput);
-    updateTab(activeTabId, { url: finalUrl, loading: true });
-  };
-
+  const navigate = () => { const finalUrl = normalizeUrl(urlInput); updateTab(activeTabId, { url: finalUrl, loading: true }); };
   const goBack = () => webviewRefs.current[activeTabId]?.goBack();
   const goForward = () => webviewRefs.current[activeTabId]?.goForward();
   const reload = () => webviewRefs.current[activeTabId]?.reload();
-  const goHome = () => {
-    updateTab(activeTabId, { url: HOME_MARKER, loading: false, title: 'Homepage' });
-    setUrlInput('');
-  };
+  const goHome = () => { updateTab(activeTabId, { url: HOME_MARKER, loading: false, title: 'Homepage' }); setUrlInput(''); };
 
-  // ---------- Bookmarks ----------
-  const persistBookmarks = async (updated) => {
-    setBookmarks(updated);
-    await AsyncStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated));
-  };
-
+  const persistBookmarks = async (updated) => { setBookmarks(updated); await AsyncStorage.setItem(BOOKMARKS_KEY, JSON.stringify(updated)); };
   const toggleBookmark = async () => {
     if (!activeTab) return;
-    if (isBookmarked) {
-      await persistBookmarks(bookmarks.filter((b) => b.url !== activeTab.url));
-    } else {
-      await persistBookmarks([{ url: activeTab.url, title: activeTab.title }, ...bookmarks]);
-    }
+    if (isBookmarked) await persistBookmarks(bookmarks.filter((b) => b.url !== activeTab.url));
+    else await persistBookmarks([{ url: activeTab.url, title: activeTab.title }, ...bookmarks]);
   };
+  const removeBookmark = async (url) => { await persistBookmarks(bookmarks.filter((b) => b.url !== url)); };
 
-  const removeBookmark = async (url) => {
-    await persistBookmarks(bookmarks.filter((b) => b.url !== url));
-  };
+  const addToHistory = useCallback(async (url, title) => {
+    if (!url || url === 'about:blank') return;
+    setHistory((prev) => {
+      if (prev[0]?.url === url) return prev;
+      const updated = [{ url, title: title || url, ts: Date.now() }, ...prev].slice(0, MAX_HISTORY);
+      AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated)).catch(() => {}); return updated;
+    });
+  }, []);
+  const clearHistory = async () => { setHistory([]); await AsyncStorage.removeItem(HISTORY_KEY); };
 
-  // ---------- History ----------
-  const addToHistory = useCallback(
-    async (url, title) => {
-      if (!url || url === 'about:blank') return;
-      setHistory((prev) => {
-        if (prev[0]?.url === url) return prev; // avoid dup consecutive entries
-        const updated = [{ url, title: title || url, ts: Date.now() }, ...prev].slice(0, MAX_HISTORY);
-        AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated)).catch(() => {});
-        return updated;
-      });
-    },
-    []
-  );
-
-  const clearHistory = async () => {
-    setHistory([]);
-    await AsyncStorage.removeItem(HISTORY_KEY);
-  };
-
-  // ---------- Homepage search ----------
   const openHomeSearch = () => {
-    if (!homeSearchInput.trim()) return;
-    const finalUrl = normalizeUrl(homeSearchInput);
-    updateTab(activeTabId, { url: finalUrl, loading: true });
-    setUrlInput(finalUrl);
-    setHomeSearchInput('');
-    setHomeUrlBarActive(false);
+    if (!homeSearchInput.trim()) return; const finalUrl = normalizeUrl(homeSearchInput);
+    updateTab(activeTabId, { url: finalUrl, loading: true }); setUrlInput(finalUrl); setHomeSearchInput(''); setHomeUrlBarActive(false);
   };
 
-  // ---------- Night mode / Desktop site / Share (hamburger menu actions) ----------
-  // Deterministic add/remove (instead of a DOM-presence "toggle") so it can be safely
-  // re-injected on every page load, tab switch, etc. without ever getting out of sync
-  // with the nightMode state.
   const buildNightModeJS = (on) => {
-    const applyBlock = on
-      ? "if (!s) { s = document.createElement('style'); s.id = '__ai_browser_night'; " +
-        "s.innerHTML = 'html{filter:invert(1) hue-rotate(180deg) !important;background:#111 !important;} " +
-        "img,video,picture,iframe,canvas{filter:invert(1) hue-rotate(180deg) !important;}'; " +
-        "document.head.appendChild(s); }"
-      : "if (s) { s.remove(); }";
-    return (
-      "(function() { var s = document.getElementById('__ai_browser_night'); " + applyBlock + " })(); true;"
-    );
+    const applyBlock = on ? "if (!s) { s = document.createElement('style'); s.id = '__ai_browser_night'; s.innerHTML = 'html{filter:invert(1) hue-rotate(180deg) !important;background:#111 !important;} img,video,picture,iframe,canvas{filter:invert(1) hue-rotate(180deg) !important;}'; document.head.appendChild(s); }" : "if (s) { s.remove(); }";
+    return `(function() { var s = document.getElementById('__ai_browser_night'); ${applyBlock} })(); true;`;
   };
 
   const toggleNightMode = () => {
     setNightMode((prev) => {
-      const next = !prev;
-      if (activeTab && activeTab.url !== HOME_MARKER) {
-        webviewRefs.current[activeTabId]?.injectJavaScript(buildNightModeJS(next));
-      }
-      return next;
+      const next = !prev; if (activeTab && activeTab.url !== HOME_MARKER) webviewRefs.current[activeTabId]?.injectJavaScript(buildNightModeJS(next)); return next;
     });
   };
 
-  // Changing the `userAgent` prop alone doesn't reliably re-request the page on
-  // Android — the WebView needs to be fully remounted for the new User-Agent to
-  // actually take effect. We do that by keying the WebView on desktopMode (see the
-  // `key` prop below), so just flipping the state here is enough.
-  const toggleDesktopMode = () => {
-    setDesktopMode((v) => !v);
-  };
-
-  const shareCurrentPage = async () => {
-    if (!activeTab || activeTab.url === HOME_MARKER) return;
-    try {
-      await Share.share({ message: activeTab.url, title: activeTab.title || activeTab.url });
-    } catch (e) {
-      // ignore
+  const toggleAdBlockerHamburger = async () => {
+    const nextState = !adBlockerEnabled; setAdBlockerEnabled(nextState);
+    await AsyncStorage.setItem(AD_BLOCKER_KEY, String(nextState));
+    if (activeTab && activeTab.url !== HOME_MARKER) {
+      if (nextState) webviewRefs.current[activeTabId]?.injectJavaScript(AD_BLOCK_JS); else webviewRefs.current[activeTabId]?.reload();
     }
   };
 
-  const openIncognitoTab = () => addTab(HOME_MARKER, { incognito: true });
-
-  // Whether incognito mode is currently "on" — true if any open tab is incognito.
-  const isIncognitoOn = tabs.some((t) => t.isIncognito);
-
-  // Pressing the Incognito menu button again while incognito is on: close every
-  // incognito tab (clearing them for good) and drop back to a normal tab.
-  const exitIncognito = () => {
-    setTabs((prev) => {
-      const remaining = prev.filter((t) => !t.isIncognito);
-      const closed = prev.filter((t) => t.isIncognito);
-      closed.forEach((t) => {
-        delete webviewRefs.current[t.id];
-        delete viewShotRefs.current[t.id];
-      });
-      if (remaining.length === 0) {
-        const fresh = makeTab();
-        setActiveTabId(fresh.id);
-        setUrlInput(fresh.url);
-        return [fresh];
-      }
-      if (!remaining.some((t) => t.id === activeTabId)) {
-        const next = remaining[remaining.length - 1];
-        setActiveTabId(next.id);
-        setUrlInput(next.url === HOME_MARKER ? '' : next.url);
-      }
-      return remaining;
-    });
-  };
-
-  // Incognito menu button toggle: off → on opens a new incognito tab, on → off
-  // closes all incognito tabs.
-  const toggleIncognito = () => {
-    if (isIncognitoOn) exitIncognito();
-    else openIncognitoTab();
-  };
-
-  // ---------- Floating "inspect" button — copy page text / find answers anywhere ----------
-  const COPY_TEXT_JS = `
-    (function() {
-      const text = document.body ? document.body.innerText.slice(0, 6000) : '';
-      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'COPY_TEXT', text }));
-    })();
-    true;
-  `;
-
-  const copyPageText = () => {
-    if (!activeTab || activeTab.url === HOME_MARKER) {
-      Alert.alert('Nothing to copy', 'Open a webpage first, then use this button.');
-      return;
+  const handleTouchStart = (e) => { touchStartX.current = e.nativeEvent.pageX; touchStartY.current = e.nativeEvent.pageY; };
+  const handleTouchEnd = (e) => {
+    const deltaX = e.nativeEvent.pageX - touchStartX.current; const deltaY = e.nativeEvent.pageY - touchStartY.current;
+    if (Math.abs(deltaX) > 100 && Math.abs(deltaY) < 60) {
+      if (deltaX > 0 && activeTab?.canGoBack) webviewRefs.current[activeTabId]?.goBack();
+      else if (deltaX < 0 && activeTab?.canGoForward) webviewRefs.current[activeTabId]?.goForward();
     }
-    webviewRefs.current[activeTabId]?.injectJavaScript(COPY_TEXT_JS);
-  };
-
-  // ---------- Downloads ----------
-  // Fires from WebView's onFileDownload (Android only). Pulls the file into the
-  // app's own sandbox storage, then the user can open/share it (Save to Downloads,
-  // Drive, WhatsApp, etc.) via the system share sheet — no extra permissions needed.
-  const persistDownloads = async (updated) => {
-    setDownloads(updated);
-    await AsyncStorage.setItem(DOWNLOADS_KEY, JSON.stringify(updated));
   };
 
   const startDownload = async (url) => {
-    if (!url) return;
-    let filename = 'file';
-    try {
-      filename = decodeURIComponent(url.split('/').pop().split('?')[0]) || `download_${Date.now()}`;
-    } catch (e) {
-      filename = `download_${Date.now()}`;
-    }
-    const dest = FileSystem.documentDirectory + filename;
-    try {
-      const { uri } = await FileSystem.downloadAsync(url, dest);
-      const entry = { name: filename, uri, url, ts: Date.now() };
-      const updated = [entry, ...downloads];
-      await persistDownloads(updated);
-      Alert.alert('Download complete ✅', filename, [
-        { text: 'Later', style: 'cancel' },
-        { text: 'Open / Save', onPress: () => openDownload(entry) },
-      ]);
-    } catch (e) {
-      Alert.alert('Download failed', `Could not download ${filename}.`);
-    }
-  };
+    if (!url) return; let filename = `download_${Date.now()}`;
+    try { const parsedName = decodeURIComponent(url.split('/').pop().split('?')[0]); if (parsedName) filename = parsedName; } catch (e) {}
+    const sandboxDest = FileSystem.documentDirectory + filename;
+    Animated.timing(downloadToastAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start();
 
-  const openDownload = async (entry) => {
+    const callback = (downloadProgress) => {
+      const progress = downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
+      setActiveDownload((prev) => prev ? { ...prev, progress: Math.max(0, Math.min(1, progress)) } : null);
+    };
+    const resumable = FileSystem.createDownloadResumable(url, sandboxDest, {}, callback);
+    setActiveDownload({ name: filename, progress: 0, resumableRef: resumable });
+
     try {
-      const available = await Sharing.isAvailableAsync();
-      if (available) {
-        await Sharing.shareAsync(entry.uri);
-      } else {
-        Alert.alert('Sharing unavailable on this device', entry.uri);
+      const result = await resumable.downloadAsync();
+      if (result) {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status === 'granted') {
+          if (Platform.OS === 'android') {
+            try {
+              let targetDirUri = storageLocation === 'sdcard' ? null : FileSystem.cacheDirectory;
+              if (storageLocation === 'sdcard') {
+                const safPermissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+                if (safPermissions.granted) targetDirUri = safPermissions.directoryUri;
+              }
+              if (targetDirUri) {
+                const base64Data = await FileSystem.readAsStringAsync(result.uri, { encoding: FileSystem.EncodingType.Base64 });
+                await FileSystem.StorageAccessFramework.createFileAsync(targetDirUri, `Ai browser/${filename}`, result.mimeType || 'application/octet-stream')
+                  .then(async (safTargetFileUri) => { await FileSystem.writeAsStringAsync(safTargetFileUri, base64Data, { encoding: FileSystem.EncodingType.Base64 }); });
+              }
+            } catch (err) { await MediaLibrary.createAssetAsync(result.uri); }
+          } else { await MediaLibrary.createAssetAsync(result.uri); }
+        }
+        const entry = { name: filename, uri: result.uri, url, ts: Date.now() };
+        setDownloads([entry, ...downloads]); await AsyncStorage.setItem(DOWNLOADS_KEY, JSON.stringify([entry, ...downloads]));
+        setActiveDownload((prev) => prev ? { ...prev, progress: 1 } : null);
+        setTimeout(() => { Animated.timing(downloadToastAnim, { toValue: 100, duration: 300, useNativeDriver: true }).start(() => setActiveDownload(null)); }, 2500);
       }
-    } catch (e) {
-      Alert.alert('Could not open this file');
-    }
+    } catch (e) { setActiveDownload(null); }
   };
 
+  const openDownload = async (entry) => { try { if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(entry.uri); } catch (e) {} };
   const deleteDownload = async (entry) => {
-    try {
-      await FileSystem.deleteAsync(entry.uri, { idempotent: true });
-    } catch (e) {
-      // ignore
-    }
-    await persistDownloads(downloads.filter((d) => d.uri !== entry.uri));
+    try { await FileSystem.deleteAsync(entry.uri, { idempotent: true }); } catch (e) {}
+    const updated = downloads.filter((d) => d.uri !== entry.uri); setDownloads(updated);
+    await AsyncStorage.setItem(DOWNLOADS_KEY, JSON.stringify(updated));
   };
 
-  const floatingPos = useRef(new Animated.ValueXY({ x: SCREEN_W - 66, y: SCREEN_H - 260 })).current;
-  const floatingDragging = useRef(false);
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (evt, gesture) => Math.abs(gesture.dx) > 4 || Math.abs(gesture.dy) > 4,
-      onPanResponderGrant: () => {
-        floatingDragging.current = false;
-        floatingPos.setOffset({ x: floatingPos.x._value, y: floatingPos.y._value });
-        floatingPos.setValue({ x: 0, y: 0 });
-      },
-      onPanResponderMove: (evt, gesture) => {
-        if (Math.abs(gesture.dx) > 4 || Math.abs(gesture.dy) > 4) floatingDragging.current = true;
-        Animated.event([null, { dx: floatingPos.x, dy: floatingPos.y }], { useNativeDriver: false })(evt, gesture);
-      },
-      onPanResponderRelease: () => {
-        floatingPos.flattenOffset();
-        if (!floatingDragging.current) setShowFloatingMenu(true);
-      },
-    })
-  ).current;
-
-  // ---------- AI provider settings persistence ----------
-  const saveAIProvider = async (next) => {
-    setAiProvider(next);
-    await AsyncStorage.setItem(AI_PROVIDER_KEY, JSON.stringify(next));
-  };
-
+  const saveAIProvider = async (next) => { setAiProvider(next); await AsyncStorage.setItem(AI_PROVIDER_KEY, JSON.stringify(next)); };
   const selectProviderMode = async (mode) => {
-    if (mode === 'default' && !isAdmin) {
-      // Locked — only admin-unlocked devices can use the shared backend.
-      setShowAdminPrompt(true);
-      return;
-    }
-    if (mode === 'custom') {
-      await saveAIProvider({ ...aiProvider, mode: 'custom', apiKey: customKeyInput.trim() });
-    } else {
-      await saveAIProvider({ ...aiProvider, mode, apiKey: aiProvider.apiKey || '' });
-    }
+    if (mode === 'default' && !isAdmin) { setShowAdminPrompt(true); return; }
+    if (mode === 'custom') await saveAIProvider({ ...aiProvider, mode: 'custom', apiKey: customKeyInput.trim() });
+    else await saveAIProvider({ ...aiProvider, mode, apiKey: aiProvider.apiKey || '' });
   };
+  const saveCustomKey = async () => { await saveAIProvider({ ...aiProvider, mode: 'custom', apiKey: customKeyInput.trim() }); setShowAISettings(false); };
+  const selectModel = async (modelId) => { setCustomModelInput(modelId); await saveAIProvider({ ...aiProvider, model: modelId }); };
+  const saveCustomModel = async () => { if (!customModelInput.trim()) return; await saveAIProvider({ ...aiProvider, model: customModelInput.trim() }); Alert.alert('Model updated'); };
 
-  const saveCustomKey = async () => {
-    await saveAIProvider({ ...aiProvider, mode: 'custom', apiKey: customKeyInput.trim() });
-    setShowAISettings(false);
-  };
+  const saveAutofillProfile = async () => { setAutofillProfile(autofillDraft); await AsyncStorage.setItem(AUTOFILL_PROFILE_KEY, JSON.stringify(autofillDraft)); setShowAutofillSettings(false); };
 
-  // ---------- Model switcher ----------
-  const selectModel = async (modelId) => {
-    setCustomModelInput(modelId);
-    await saveAIProvider({ ...aiProvider, model: modelId });
-  };
-
-  const saveCustomModel = async () => {
-    const trimmed = customModelInput.trim();
-    if (!trimmed) return;
-    await saveAIProvider({ ...aiProvider, model: trimmed });
-    Alert.alert('Model updated', `Now using: ${trimmed}`);
-  };
-
-  // ---------- Autofill profile ----------
-  const saveAutofillProfile = async () => {
-    setAutofillProfile(autofillDraft);
-    await AsyncStorage.setItem(AUTOFILL_PROFILE_KEY, JSON.stringify(autofillDraft));
-    setShowAutofillSettings(false);
-    Alert.alert('Saved ✅', 'Your info has been saved for autofill.');
-  };
-
-  // Builds the injected JS that fills ONLY recognized personal-info fields
-  // (name / email / phone / address / city / state / pincode / country).
-  // Safety by design: it never touches <textarea>, <select> answer/quiz-style
-  // fields, radio/checkbox groups, or any field that doesn't clearly match one
-  // of the whitelisted categories below — so it can't be used to fill in exam
-  // or quiz answers, only a person's own contact details.
   const buildAutofillJS = (profile) => {
     const safe = JSON.stringify(profile || {});
-    return `
-    (function() {
+    return `(function() {
       try {
-        var profile = ${safe};
-        var filledCount = 0;
-
-        // Whitelist: category -> patterns matched against name/id/placeholder/autocomplete/type
+        var profile = ${safe}; var filledCount = 0;
         var rules = [
           { key: 'email', value: profile.email, patterns: ['email', 'e-mail'], type: 'email' },
-          { key: 'phone', value: profile.phone, patterns: ['phone', 'mobile', 'contact no', 'contactno', 'whatsapp'], type: 'tel' },
-          { key: 'fullName', value: profile.fullName, patterns: ['fullname', 'full name', 'yourname', 'name'], exclude: ['username', 'user name', 'filename', 'firstname', 'lastname', 'company'] },
-          { key: 'address', value: profile.address, patterns: ['address', 'street', 'addr'] },
-          { key: 'city', value: profile.city, patterns: ['city', 'town'] },
-          { key: 'state', value: profile.state, patterns: ['state', 'province'] },
-          { key: 'pincode', value: profile.pincode, patterns: ['pincode', 'pin code', 'zipcode', 'zip code', 'zip', 'postal'] },
+          { key: 'phone', value: profile.phone, patterns: ['phone', 'mobile', 'contact no', 'whatsapp'], type: 'tel' },
+          { key: 'fullName', value: profile.fullName, patterns: ['fullname', 'full name', 'name'], exclude: ['username'] },
+          { key: 'address', value: profile.address, patterns: ['address', 'street'] },
+          { key: 'city', value: profile.city, patterns: ['city'] },
+          { key: 'state', value: profile.state, patterns: ['state'] },
+          { key: 'pincode', value: profile.pincode, patterns: ['pincode', 'zipcode'] },
           { key: 'country', value: profile.country, patterns: ['country'] },
         ];
-
-        // Extra safety: never fill anything that smells like exam/quiz/answer content,
-        // even if it happens to also match a whitelist word above.
-        var hardBlock = ['answer', 'quiz', 'question', 'roll', 'marks', 'score', 'exam', 'otp', 'password', 'code'];
-
-        var inputs = document.querySelectorAll('input:not([type=hidden]):not([type=password]):not([type=radio]):not([type=checkbox]):not([type=submit]):not([type=button])');
+        var hardBlock = ['answer', 'quiz', 'question', 'exam', 'otp', 'password'];
+        var inputs = document.querySelectorAll('input:not([type=hidden]):not([type=password]):not([type=radio]):not([type=checkbox])');
         inputs.forEach(function(el) {
-          if (el.value && el.value.trim().length > 0) return; // never overwrite existing text
-          var sig = ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || '') + ' ' + (el.getAttribute('autocomplete') || '') + ' ' + (el.type || '')).toLowerCase();
+          if (el.value && el.value.trim().length > 0) return;
+          var sig = ((el.name || '') + ' ' + (el.id || '') + ' ' + (el.placeholder || '')).toLowerCase();
           if (hardBlock.some(function(b) { return sig.indexOf(b) !== -1; })) return;
-
           for (var i = 0; i < rules.length; i++) {
-            var rule = rules[i];
-            if (!rule.value) continue;
-            var excluded = rule.exclude && rule.exclude.some(function(x) { return sig.indexOf(x) !== -1; });
-            if (excluded) continue;
-            var matched = rule.patterns.some(function(p) { return sig.indexOf(p) !== -1; }) || (rule.type && el.type === rule.type);
-            if (matched) {
-              var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-              setter.call(el, rule.value);
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              filledCount++;
-              break;
-            }
+            var rule = rules[i]; if (!rule.value) continue;
+            if (rule.patterns.some(function(p) { return sig.indexOf(p) !== -1; })) { el.value = rule.value; filledCount++; break; }
           }
         });
-
         window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'AUTOFILL_DONE', count: filledCount }));
-      } catch (e) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'AUTOFILL_DONE', count: 0, error: String(e) }));
-      }
-    })();
-    true;
-    `;
+      } catch (e) {}
+    })(); true;`;
   };
 
-  const runAutofill = () => {
-    if (!activeTab || activeTab.url === HOME_MARKER) {
-      Alert.alert('Open a page first', 'Autofill works on a real webpage with a form on it.');
-      return;
-    }
-    const hasAnyInfo = Object.values(autofillProfile).some((v) => (v || '').trim().length > 0);
-    if (!hasAnyInfo) {
-      setAutofillDraft(autofillProfile);
-      setShowAutofillSettings(true);
-      return;
-    }
-    webviewRefs.current[activeTabId]?.injectJavaScript(buildAutofillJS(autofillProfile));
-  };
+  const runAutofill = () => { webviewRefs.current[activeTabId]?.injectJavaScript(buildAutofillJS(autofillProfile)); };
 
   const submitAdminPasscode = async () => {
     if (adminPasscodeInput.trim() === ADMIN_PASSCODE) {
-      await AsyncStorage.setItem(ADMIN_UNLOCK_KEY, 'true');
-      setIsAdmin(true);
-      setAdminError(false);
-      setAdminPasscodeInput('');
-      setShowAdminPrompt(false);
+      await AsyncStorage.setItem(ADMIN_UNLOCK_KEY, 'true'); setIsAdmin(true); setAdminError(false); setAdminPasscodeInput(''); setShowAdminPrompt(false);
       await saveAIProvider({ ...aiProvider, mode: 'default', apiKey: aiProvider.apiKey || '' });
-    } else {
-      setAdminError(true);
-    }
+    } else { setAdminError(true); }
   };
 
-  // ---------- AI panel ----------
-  // Injected JS pulls visible text from the page so we can send context to Groq
-  const EXTRACT_TEXT_JS = `
-    (function() {
-      const text = document.body ? document.body.innerText.slice(0, 6000) : '';
-      window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'PAGE_TEXT', text, title: document.title }));
-    })();
-    true;
-  `;
-
-  const [pendingAIAction, setPendingAIAction] = useState(null); // { mode, question } or null
-
-  // Detects whether the current page has a fillable form (a real <form>, or at
-  // least a couple of text-like inputs) so we can surface the "Fill form" chip
-  // automatically — no manual button needed.
-  const FORM_DETECT_JS = `
-    (function() {
-      if (window.__formDetectInstalled) return true;
-      window.__formDetectInstalled = true;
-      function check() {
-        var hasForm = document.forms && document.forms.length > 0;
-        if (hasForm) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'FORM_DETECTED' }));
-        }
-      }
-      check();
-      setTimeout(check, 1200);
-    })();
-    true;
-  `;
+  const EXTRACT_TEXT_JS = `(function() { const text = document.body ? document.body.innerText.slice(0, 6000) : ''; window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'PAGE_TEXT', text, title: document.title })); })(); true;`;
+  const [pendingAIAction, setPendingAIAction] = useState(null);
+  const TLDR_WATCH_JS = `(function() { if (window.__tldrWatchInstalled) return true; window.__tldrWatchInstalled = true; window.addEventListener('scroll', function() { var doc = document.documentElement; if ((window.scrollY/doc.scrollHeight) > 0.25) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'SHOW_TLDR' })); } }, { passive: true }); })(); true;`;
+  const FORM_DETECT_JS = `(function() { if (document.forms.length > 0 || document.querySelectorAll('input').length > 1) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'FORM_DETECTED' })); } })(); true;`;
 
   const handleWebViewMessage = async (event) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'PAGE_TEXT' && pendingAIAction) {
-        const { mode, question } = pendingAIAction;
-        setPendingAIAction(null);
-        await askAI({ mode, question, pageContext: data.text });
-      }
-      if (data.type === 'COPY_TEXT') {
-        await Clipboard.setStringAsync(data.text || '');
-        Alert.alert('Copied ✅', 'Page text copied to clipboard.');
-      }
-      if (data.type === 'FORM_DETECTED') {
-        setShowFillFormButton(true);
-      }
-      if (data.type === 'AUTOFILL_DONE') {
-        if (data.count > 0) {
-          Alert.alert('Autofill ✅', `Filled ${data.count} field${data.count > 1 ? 's' : ''} (name/email/phone/address only).`);
-        } else {
-          Alert.alert('Nothing to fill', 'No matching name/email/phone/address fields found on this page — or they were already filled.');
-        }
-      }
-    } catch (e) {
-      // ignore non-JSON messages
-    }
+      if (data.type === 'PAGE_TEXT' && pendingAIAction) { const { mode, question } = pendingAIAction; setPendingAIAction(null); await askAI({ mode, question, pageContext: data.text }); }
+      if (data.type === 'COPY_TEXT') { await Clipboard.setStringAsync(data.text || ''); Alert.alert('Copied ✅'); }
+      if (data.type === 'SHOW_TLDR') setShowTldrButton(true);
+      if (data.type === 'FORM_DETECTED') setShowFillFormButton(true);
+      if (data.type === 'AUTOFILL_DONE') Alert.alert('Autofill Done');
+    } catch (e) {}
   };
 
-  // Auto-run mode (currently only 'explain') — extracts the page text first, then asks.
-  const runAIMode = (mode) => {
-    if (!activeTab || activeTab.url === HOME_MARKER) {
-      Alert.alert('Open a page first', 'This works while you\u2019re viewing a webpage.');
-      return;
-    }
-    setAiMode(mode);
-    setShowAIPanel(true);
-    setAiAnswer('');
-    setAiError(false);
-    setAiLoading(true);
-    setPendingAIAction({ mode, question: '' });
-    webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS);
-  };
+  const runTldr = () => { setShowTldrButton(false); setAiMode('tldr'); setShowAIPanel(true); setAiLoading(true); setPendingAIAction({ mode: 'tldr', question: '' }); webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS); };
+  const runAIMode = (mode) => { setAiMode(mode); setShowAIPanel(true); setAiLoading(true); setPendingAIAction({ mode, question: '' }); webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS); };
 
   const askAI = async ({ mode = 'ask', question = '', pageContext = '' }) => {
-    setAiLoading(true);
-    setAiError(false);
-    setAiAnswer('');
-
-    if (aiProvider.mode === 'none') {
-      setAiError(true);
-      setAiAnswer('AI is turned off. Enable it from AI Settings (⚙️) — choose Default or add your own API key.');
-      setAiLoading(false);
-      return;
-    }
-
+    setAiLoading(true); setAiError(false); setAiAnswer('');
+    if (aiProvider.mode === 'none') { setAiAnswer('AI Turned Off'); setAiLoading(false); return; }
     try {
-      let json;
-      const model = aiProvider.model || DEFAULT_MODEL;
-      if (aiProvider.mode === 'custom' && aiProvider.apiKey) {
-        json = await callGroqDirect(aiProvider.apiKey, model, mode, question, pageContext, activeTab?.url);
-      } else {
-        const res = await fetch(AI_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode, question, pageContext, pageUrl: activeTab?.url, model }),
-        });
+      let json; const model = aiProvider.model || DEFAULT_MODEL;
+      if (aiProvider.mode === 'custom' && aiProvider.apiKey) json = await callGroqDirect(aiProvider.apiKey, model, mode, question, pageContext, activeTab?.url);
+      else {
+        const res = await fetch(AI_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, question, pageContext, pageUrl: activeTab?.url, model }) });
         json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'AI error');
       }
-      setAiAnswer(json.answer || 'No response from AI.');
-    } catch (err) {
-      setAiError(true);
-      setAiAnswer(
-        aiProvider.mode === 'custom'
-          ? 'Could not reach Groq with your API key. Check the key in AI Settings.'
-          : "Could not reach the AI backend. Check AI_ENDPOINT in App.js and your network connection."
-      );
-    } finally {
-      setAiLoading(false);
-    }
+      setAiAnswer(json.answer || 'No response.');
+    } catch (err) { setAiError(true); } finally { setAiLoading(false); }
   };
 
-  // Free-form "Ask AI" — always pulls fresh page text first (if a real page is open)
-  // so the answer is grounded in what's actually on screen right now.
   const submitAIQuestion = () => {
-    const q = aiQuestion.trim();
-    if (!q) return;
-    setAiMode('ask');
-    setShowAIPanel(true);
-    setAiAnswer('');
-    setAiError(false);
-    setAiLoading(true);
-    setAiQuestion('');
-    if (activeTab && activeTab.url !== HOME_MARKER) {
-      setPendingAIAction({ mode: 'ask', question: q });
-      webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS);
-    } else {
-      askAI({ mode: 'ask', question: q, pageContext: '' });
-    }
+    const q = aiQuestion.trim(); if (!q) return; setAiMode('ask'); setShowAIPanel(true); setAiLoading(true); setAiQuestion('');
+    if (activeTab && activeTab.url !== HOME_MARKER) { setPendingAIAction({ mode: 'ask', question: q }); webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS); }
+    else askAI({ mode: 'ask', question: q, pageContext: '' });
   };
 
-  const openAIPanelBlank = () => {
-    setAiMode('ask');
-    setAiAnswer('');
-    setAiError(false);
-    setShowAIPanel(true);
-  };
+  const floatingPos = useRef(new Animated.ValueXY({ x: SCREEN_W - 66, y: SCREEN_H - 260 })).current;
+  const panResponder = useRef(PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onPanResponderMove: Animated.event([null, { dx: floatingPos.x, dy: floatingPos.y }], { useNativeDriver: false }),
+    onPanResponderRelease: () => {
+      floatingPos.flattenOffset();
+      let boundedX = Math.max(0, Math.min(SCREEN_W - 54, floatingPos.x._value));
+      let boundedY = Math.max(TOP_PADDING, Math.min(SCREEN_H - 120, floatingPos.y._value));
+      Animated.spring(floatingPos, { toValue: { x: boundedX, y: boundedY }, useNativeDriver: false }).start();
+      setShowFloatingMenu(true);
+    },
+  })).current;
 
-  // ---------- Render ----------
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar style="dark" />
       <View style={{ height: TOP_PADDING, backgroundColor: activeTab?.isIncognito ? '#1a1a1a' : '#fff' }} />
 
-      {/* URL bar — hidden on Homepage, only shown while browsing a real page */}
       {activeTab?.url !== HOME_MARKER && (
         <View style={styles.urlBar}>
-          <TouchableOpacity onPress={goHome} style={styles.homeBtn}>
-            <Text style={styles.homeBtnText}>⌂</Text>
-          </TouchableOpacity>
-          <TextInput
-            style={styles.urlInput}
-            value={urlInput}
-            onChangeText={setUrlInput}
-            onSubmitEditing={navigate}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            placeholder="Search or type a URL"
-            placeholderTextColor="#9a9a9a"
-            returnKeyType="go"
-          />
-          <TouchableOpacity onPress={toggleBookmark} style={styles.starBtn}>
-            <Text style={[styles.starBtnText, isBookmarked && styles.starActive]}>
-              {isBookmarked ? '★' : '☆'}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={navigate} style={styles.goBtn}>
-            <Text style={styles.goBtnText}>Go</Text>
-          </TouchableOpacity>
+          <TouchableOpacity onPress={goHome} style={styles.homeBtn}><Text style={styles.homeBtnText}>⌂</Text></TouchableOpacity>
+          <TextInput style={styles.urlInput} value={urlInput} onChangeText={setUrlInput} onSubmitEditing={navigate} autoCapitalize="none" autoCorrect={false} keyboardType="url" returnKeyType="go" />
+          <TouchableOpacity onPress={toggleBookmark} style={styles.starBtn}><Text style={[styles.starBtnText, isBookmarked && styles.starActive]}>{isBookmarked ? '★' : '☆'}</Text></TouchableOpacity>
+          <TouchableOpacity onPress={navigate} style={styles.goBtn}><Text style={styles.goBtnText}>Go</Text></TouchableOpacity>
         </View>
       )}
 
-      {/* Progress bar */}
-      <View style={styles.progressTrack}>
-        <Animated.View
-          style={[
-            styles.progressFill,
-            {
-              width: progressAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: ['0%', '100%'],
-              }),
-              opacity: activeTab?.loading ? 1 : progressAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
-            },
-          ]}
-        />
-      </View>
-
-      {/* Active WebView (or native Homepage for HOME_MARKER tabs) */}
       <View style={{ flex: 1 }}>
-        {tabs.map((tab) =>
-          tab.url === HOME_MARKER ? (
-            <View
-              key={tab.id}
-              ref={(r) => (viewShotRefs.current[tab.id] = r)}
-              collapsable={false}
-              style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
-            >
+        {tabs.map((tab) => {
+          if (tab.id !== activeTabId) return null;
+          return tab.url === HOME_MARKER ? (
+            <View key={tab.id} style={StyleSheet.absoluteFill}>
               <View style={[styles.homeScreen, nightMode && styles.homeScreenNight]}>
                 <View style={styles.homeHeaderRow}>
-                  <TouchableOpacity onPress={() => homeSearchInputRef.current?.focus()} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <TouchableOpacity onPress={() => setHomeUrlBarActive(true)}>
                     <Text style={[styles.homeHeaderTitle, nightMode && styles.homeBrandNight]}>Homepage</Text>
                   </TouchableOpacity>
                 </View>
-
                 <View style={styles.homeCenterWrap}>
-                  <View style={{ flex: 3 }} />
-                  {homeUrlBarActive ? (
-                    <View style={[styles.homeUrlBar, nightMode && styles.homeUrlBarNight, { marginBottom: 0 }]}>
-                      <Ionicons name="search-outline" size={20} color={nightMode ? '#aaa' : '#666'} />
-                      <TextInput
-                        autoFocus
-                        style={[styles.homeUrlBarInput, nightMode && styles.homeSearchInputNight]}
-                        value={homeSearchInput}
-                        onChangeText={setHomeSearchInput}
-                        onSubmitEditing={openHomeSearch}
-                        placeholder="Search or type a URL"
-                        placeholderTextColor="#9a9a9a"
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        returnKeyType="go"
-                      />
-                      <TouchableOpacity
-                        onPress={() => {
-                          setHomeUrlBarActive(false);
-                          setHomeSearchInput('');
-                        }}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                      >
-                        <Ionicons name="close" size={22} color={nightMode ? '#aaa' : '#666'} />
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
-                      <TextInput
-                        ref={homeSearchInputRef}
-                        style={[styles.homeSearchInputInner, nightMode && { color: '#fff' }]}
-                        value={homeSearchInput}
-                        onChangeText={setHomeSearchInput}
-                        onSubmitEditing={openHomeSearch}
-                        placeholder="Search or type a URL"
-                        placeholderTextColor={nightMode ? '#888' : '#9a9a9a'}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        returnKeyType="go"
-                      />
-                      <TouchableOpacity style={styles.homeGoBtnInner} onPress={openHomeSearch}>
-                        <Ionicons name="search" size={20} color={nightMode ? '#aaa' : '#5B5FEF'} />
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                  <View style={{ flex: 7 }} />
+                  <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
+                    <TextInput style={[styles.homeSearchInputInner, nightMode && { color: '#fff' }]} value={homeSearchInput} onChangeText={setHomeSearchInput} onSubmitEditing={openHomeSearch} placeholder="Search or type URL" placeholderTextColor="#9a9a9a" />
+                    <TouchableOpacity style={styles.homeGoBtnInner} onPress={openHomeSearch}><Ionicons name="search" size={20} color="#5B5FEF" /></TouchableOpacity>
+                  </View>
                 </View>
               </View>
             </View>
           ) : (
-            <View
-              key={tab.id}
-              ref={(r) => (viewShotRefs.current[tab.id] = r)}
-              collapsable={false}
-              style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
-            >
+            <View key={tab.id} style={StyleSheet.absoluteFill} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
               <WebView
-                pullToRefreshEnabled
-                // Keying on desktopMode forces a full remount when the user toggles
-                // Desktop/Mobile site — Android WebView won't reliably re-request the
-                // page with a new User-Agent header otherwise.
+                pullToRefreshEnabled={true}
                 key={`wv-${tab.id}-${desktopMode ? 'desktop' : 'mobile'}`}
                 ref={(ref) => (webviewRefs.current[tab.id] = ref)}
                 source={{ uri: tab.url }}
                 userAgent={desktopMode ? DESKTOP_UA : undefined}
                 incognito={tab.isIncognito}
-                onFileDownload={
-                  Platform.OS === 'android'
-                    ? ({ nativeEvent }) => startDownload(nativeEvent.downloadUrl)
-                    : undefined
-                }
-                onLoadStart={() => {
-                  updateTab(tab.id, { loading: true });
-                  if (tab.id === activeTabId) {
-                    setShowFillFormButton(false);
-                  }
-                }}
+                onFileDownload={({ nativeEvent }) => startDownload(nativeEvent.downloadUrl)}
                 onLoadEnd={() => {
-                  updateTab(tab.id, { loading: false });
-                  const t = tabs.find((x) => x.id === tab.id);
-                  if (!t?.isIncognito) addToHistory(t?.url, t?.title);
-                  // Re-apply night mode on every fresh page load — a newly loaded page
-                  // has a clean DOM, so the previously injected style is gone.
-                  if (nightMode && tab.id === activeTabId) {
-                    webviewRefs.current[tab.id]?.injectJavaScript(buildNightModeJS(true));
-                  }
+                  if (adBlockerEnabled) webviewRefs.current[tab.id]?.injectJavaScript(AD_BLOCK_JS);
+                  webviewRefs.current[tab.id]?.injectJavaScript(TLDR_WATCH_JS);
                   webviewRefs.current[tab.id]?.injectJavaScript(FORM_DETECT_JS);
                 }}
                 onNavigationStateChange={(navState) => {
-                  updateTab(tab.id, {
-                    url: navState.url,
-                    title: navState.title || navState.url,
-                    canGoBack: navState.canGoBack,
-                    canGoForward: navState.canGoForward,
-                  });
+                  updateTab(tab.id, { url: navState.url, title: navState.title || navState.url, canGoBack: navState.canGoBack, canGoForward: navState.canGoForward });
                   if (tab.id === activeTabId) setUrlInput(navState.url);
                 }}
                 onMessage={handleWebViewMessage}
-                startInLoadingState
-                renderLoading={() => (
-                  <View style={styles.loadingOverlay}>
-                    <ActivityIndicator size="large" color="#5B5FEF" />
-                  </View>
-                )}
-                renderError={() => (
-                  <View style={styles.loadingOverlay}>
-                    <Text style={styles.errorText}>⚠️ Couldn't load this page</Text>
-                    <TouchableOpacity onPress={reload} style={styles.retryBtn}>
-                      <Text style={styles.retryBtnText}>Retry</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
               />
             </View>
-          )
-        )}
+          );
+        })}
       </View>
 
-      {/* Floating draggable button — drag anywhere, tap to copy/find text on screen */}
-      <Animated.View
-        style={[styles.floatingBtn, { transform: floatingPos.getTranslateTransform() }]}
-        {...panResponder.panHandlers}
-      >
+      {/* --- Download Toast UI Overlay --- */}
+      {activeDownload && (
+        <View style={styles.chromeDownloadToast}>
+          <View style={styles.downloadInfoRow}>
+            <Ionicons name="download-cloud-outline" size={22} color="#5B5FEF" style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text numberOfLines={1} style={styles.downloadFileName}>{activeDownload.name}</Text>
+              <Text style={styles.downloadProgressText}>
+                {activeDownload.progress === 1 ? 'Saved inside "Ai browser" folder! 📁' : `Downloading... ${Math.round(activeDownload.progress * 100)}%`}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.toastProgressBarTrack}><View style={[styles.toastProgressBarFill, { width: `${activeDownload.progress * 100}%` }]} /></View>
+        </View>
+      )}
+
+      {/* Floating Buttons */}
+      <Animated.View style={[styles.floatingBtn, { transform: floatingPos.getTranslateTransform() }]} {...panResponder.panHandlers}>
         <Text style={styles.floatingBtnText}>🔍</Text>
       </Animated.View>
 
-      {/* Floating "Fill form" chip — appears once a real <form> is detected on the page */}
       {showFillFormButton && (
-        <TouchableOpacity
-          style={[styles.tldrChip, { bottom: 90 }]}
-          onPress={() => {
-            setShowFillFormButton(false);
-            runAutofill();
-          }}
-          activeOpacity={0.85}
-        >
+        <TouchableOpacity style={[styles.tldrChip, { bottom: showTldrButton ? 150 : 90 }]} onPress={() => { setShowFillFormButton(false); runAutofill(); }} activeOpacity={0.85}>
           <Text style={styles.tldrChipText}>📝 Fill form</Text>
         </TouchableOpacity>
       )}
 
-      {/* Bottom toolbar — clean 5-icon layout: Back / Forward / Home / Tabs / Menu */}
+      {showTldrButton && (
+        <TouchableOpacity style={styles.tldrChip} onPress={runTldr} activeOpacity={0.85}>
+          <Text style={styles.tldrChipText}>⚡ TL;DR</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* Bottom Layout Toolbar */}
       <View style={styles.toolbarWrap}>
         <View style={styles.toolbar}>
-          <TouchableOpacity onPress={goBack} disabled={!activeTab?.canGoBack} style={styles.toolBtn}>
-            <Ionicons
-              name="chevron-back-outline"
-              size={26}
-              color={activeTab?.canGoBack ? '#333' : '#d0d0d0'}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={goForward} disabled={!activeTab?.canGoForward} style={styles.toolBtn}>
-            <Ionicons
-              name="chevron-forward-outline"
-              size={26}
-              color={activeTab?.canGoForward ? '#333' : '#d0d0d0'}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={goHome} style={styles.toolBtn}>
-            <Ionicons name="home-outline" size={24} color="#333" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={async () => {
-              await captureTabThumbnail(activeTabId);
-              setShowTabSwitcher(true);
-            }}
-            style={styles.toolBtn}
-          >
-            <View style={styles.tabCountBadge}>
-              <Text style={styles.tabCountText}>{tabs.length}</Text>
-            </View>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setShowMenu(true)} style={styles.toolBtn}>
-            <Ionicons name="menu-outline" size={26} color="#333" />
-          </TouchableOpacity>
+          <TouchableOpacity onPress={goBack} disabled={!activeTab?.canGoBack} style={styles.toolBtn}><Ionicons name="chevron-back-outline" size={26} color={activeTab?.canGoBack ? '#333' : '#d0d0d0'} /></TouchableOpacity>
+          <TouchableOpacity onPress={goForward} disabled={!activeTab?.canGoForward} style={styles.toolBtn}><Ionicons name="chevron-forward-outline" size={26} color={activeTab?.canGoForward ? '#333' : '#d0d0d0'} /></TouchableOpacity>
+          <TouchableOpacity onPress={goHome} style={styles.toolBtn}><Ionicons name="home-outline" size={24} color="#333" /></TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowTabSwitcher(true)} style={styles.toolBtn}><View style={styles.tabCountBadge}><Text style={styles.tabCountText}>{tabs.length}</Text></View></TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowMenu(true)} style={styles.toolBtn}><Ionicons name="menu-outline" size={26} color="#333" /></TouchableOpacity>
         </View>
       </View>
 
-      {/* Hamburger grid menu — Via-style bottom sheet, tap outside to close */}
-      <Modal visible={showMenu} animationType="fade" transparent onRequestClose={() => setShowMenu(false)}>
-        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setShowMenu(false)}>
-          <TouchableOpacity activeOpacity={1} style={styles.menuSheet} onPress={() => {}}>
-            <View style={styles.menuGrid}>
-              {MENU_ITEMS_DEF.map((item) => (
-                <TouchableOpacity
-                  key={item.key}
-                  style={styles.menuItem}
-                  onPress={() => {
-                    setShowMenu(false);
-                    if (item.key === 'night') toggleNightMode();
-                    else if (item.key === 'reload') reload();
-                    else if (item.key === 'bookmarks') setShowBookmarks(true);
-                    else if (item.key === 'history') setShowHistory(true);
-                    else if (item.key === 'downloads') setShowDownloads(true);
-                    else if (item.key === 'incognito') toggleIncognito();
-                    else if (item.key === 'share') shareCurrentPage();
-                    else if (item.key === 'addBookmark') toggleBookmark();
-                    else if (item.key === 'desktop') toggleDesktopMode();
-                    else if (item.key === 'autofillInfo') {
-                      setAutofillDraft(autofillProfile);
-                      setShowAutofillSettings(true);
-                    }
-                    else if (item.key === 'settings') {
-                      setCustomKeyInput(aiProvider.apiKey || '');
-                      setCustomModelInput(aiProvider.model || DEFAULT_MODEL);
-                      setShowAISettings(true);
-                    }
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.menuIcon,
-                      item.key === 'incognito' && isIncognitoOn && styles.menuIconActive,
-                    ]}
-                  >
-                    {item.key === 'night' && nightMode ? '☀️' : item.key === 'desktop' && desktopMode ? '📱' : item.icon}
-                  </Text>
-                  <Text style={styles.menuLabel}>
-                    {item.key === 'night' && nightMode
-                      ? 'Day mode'
-                      : item.key === 'desktop' && desktopMode
-                      ? 'Mobile site'
-                      : item.key === 'incognito' && isIncognitoOn
-                      ? 'Exit incognito'
-                      : item.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <TouchableOpacity style={styles.menuCloseChevron} onPress={() => setShowMenu(false)}>
-              <Text style={{ fontSize: 18, color: '#999' }}>⌄</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+      {/* --- ALL MODALS CONFIGURED WITH MACCHAN SMOOTH ANIMATIONS --- */}
+      
+      {/* 1. Tabs Switcher */}
+      {tabSwitcherMounted && (
+        <Modal visible={tabSwitcherMounted} animationType="none" transparent onRequestClose={() => setShowTabSwitcher(false)}>
+          <View style={styles.modalOverlay}>
+            <Animated.View style={[styles.modalCard, { transform: [{ translateY: tabSwitcherAnim }] }]}>
+              <Text style={styles.modalTitle}>Tabs</Text>
+              <FlatList
+                data={tabs}
+                keyExtractor={(t) => String(t.id)}
+                numColumns={2}
+                columnWrapperStyle={{ gap: 10 }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={[styles.tabThumbCard, item.id === activeTabId && styles.tabThumbCardActive]} onPress={() => handleSwitchTabSmoothly(item.id)} activeOpacity={0.85}>
+                    <View style={styles.tabThumbPreview}>
+                      <Text style={styles.tabThumbPlaceholderIcon}>{item.url === HOME_MARKER ? '🏠' : item.isIncognito ? '🕵️' : '🌐'}</Text>
+                      <TouchableOpacity onPress={() => closeTab(item.id)} style={styles.tabThumbCloseX}><Text style={styles.closeX}>✕</Text></TouchableOpacity>
+                    </View>
+                    <Text numberOfLines={1} style={styles.tabThumbTitle}>{item.isIncognito ? '🕵️ ' : ''}{item.title || item.url}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+              <TouchableOpacity onPress={handleAddNewTabSmoothly} style={styles.newTabBtn}><Text style={styles.newTabBtnText}>+ New Tab</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => setShowTabSwitcher(false)} style={styles.closeModalBtn}><Text style={styles.closeModalBtnText}>Close</Text></TouchableOpacity>
+            </Animated.View>
+          </View>
+        </Modal>
+      )}
 
-      {/* Floating button quick menu */}
-      <Modal
-        visible={showFloatingMenu}
-        animationType="fade"
-        transparent
-        onRequestClose={() => setShowFloatingMenu(false)}
-      >
-        <TouchableOpacity
-          style={styles.floatingMenuOverlay}
-          activeOpacity={1}
-          onPress={() => setShowFloatingMenu(false)}
-        >
+      {/* 2. Hamburger Menu Sheet */}
+      {menuMounted && (
+        <Modal visible={menuMounted} animationType="none" transparent onRequestClose={() => setShowMenu(false)}>
+          <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setShowMenu(false)}>
+            <Animated.View style={[styles.menuSheet, { transform: [{ translateY: menuAnim }] }]} onStartShouldSetResponder={() => true}>
+              <View style={styles.menuGrid}>
+                {MENU_ITEMS_DEF.map((item) => (
+                  <TouchableOpacity key={item.key} style={styles.menuItem} onPress={() => {
+                    setShowMenu(false);
+                    setTimeout(() => {
+                      if (item.key === 'night') toggleNightMode();
+                      else if (item.key === 'reload') reload();
+                      else if (item.key === 'bookmarks') setShowBookmarks(true);
+                      else if (item.key === 'history') setShowHistory(true);
+                      else if (item.key === 'downloads') setShowDownloads(true);
+                      else if (item.key === 'incognito') setTabs(tabs.map(t => t.id === activeTabId ? {...t, isIncognito: !t.isIncognito} : t));
+                      else if (item.key === 'share') shareCurrentPage();
+                      else if (item.key === 'addBookmark') toggleBookmark();
+                      else if (item.key === 'desktop') setDesktopMode(!desktopMode);
+                      else if (item.key === 'autofillInfo') { setAutofillDraft(autofillProfile); setShowAutofillSettings(true); }
+                      else if (item.key === 'storageSettings') setShowStorageModal(true); 
+                    }, 200);
+                  }}>
+                    <Text style={[styles.menuIcon, item.key === 'adblock' && adBlockerEnabled && styles.menuIconActiveAdBlock]}>{item.icon}</Text>
+                    <Text style={styles.menuLabel}>{item.key === 'adblock' ? `Ad Block: ${adBlockerEnabled ? 'ON' : 'OFF'}` : item.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </Animated.View>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* 3. Storage Settings */}
+      {storageMounted && (
+        <Modal visible={storageMounted} animationType="none" transparent onRequestClose={() => setShowStorageModal(false)}>
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowStorageModal(false)}>
+            <Animated.View style={[styles.modalCard, { transform: [{ translateY: storageAnim }] }]} onStartShouldSetResponder={() => true}>
+              <Text style={styles.modalTitle}>Storage Settings</Text>
+              <TouchableOpacity style={styles.providerRow} onPress={() => { setStorageLocation('phone'); AsyncStorage.setItem(STORAGE_LOCATION_KEY, 'phone'); setShowStorageModal(false); }}>
+                <View style={[styles.radioOuter, storageLocation === 'phone' && styles.radioOuterActive]}><View style={storageLocation === 'phone' && styles.radioInner} /></View>
+                <View><Text style={styles.providerLabel}>Phone Memory (Internal Storage)</Text><Text style={styles.providerSubtext}>Path: Internal/Ai browser/</Text></View>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.providerRow} onPress={() => { setStorageLocation('sdcard'); AsyncStorage.setItem(STORAGE_LOCATION_KEY, 'sdcard'); setShowStorageModal(false); }}>
+                <View style={[styles.radioOuter, storageLocation === 'sdcard' && styles.radioOuterActive]}><View style={storageLocation === 'sdcard' && styles.radioInner} /></View>
+                <View><Text style={styles.providerLabel}>SD Card Memory (External Mounts)</Text><Text style={styles.providerSubtext}>Path: SDCard/Ai browser/</Text></View>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setShowStorageModal(false)} style={styles.closeModalBtn}><Text style={styles.closeModalBtnText}>Close</Text></TouchableOpacity>
+            </Animated.View>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* 4. AI Subpage Ask Pane */}
+      {aiPanelMounted && (
+        <Modal visible={aiPanelMounted} animationType="none" transparent onRequestClose={() => setShowAIPanel(false)}>
+          <TouchableOpacity style={styles.aiOverlay} activeOpacity={1} onPress={() => setShowAIPanel(false)}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ width: '100%' }}>
+              <Animated.View style={[styles.aiCard, { transform: [{ translateY: aiPanelAnim }] }]} onStartShouldSetResponder={() => true}>
+                <View style={styles.aiHeaderRow}>
+                  <Text style={styles.modalTitle}>{aiMode === 'explain' ? '📖 Explaining this page' : '✨ Ask AI'}</Text>
+                  <TouchableOpacity onPress={() => { setCustomKeyInput(aiProvider.apiKey || ''); setCustomModelInput(aiProvider.model || DEFAULT_MODEL); setShowAISettings(true); }} style={styles.settingsGearBtn}><Text style={styles.settingsGearText}>⚙️</Text></TouchableOpacity>
+                </View>
+                <View style={{ flex: 1 }}>
+                  {aiLoading ? ( <View style={styles.aiLoadingWrap}><ActivityIndicator size="large" color="#5B5FEF" /><Text style={styles.aiLoadingText}>{AI_MODES[aiMode]?.hint || 'Thinking…'}</Text></View> ) : (
+                    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 20 }} keyboardShouldPersistTaps="handled"><Text style={[styles.aiAnswer, aiError && styles.aiAnswerError]}>{aiAnswer || 'Ask anything about what is on screen right now.'}</Text></ScrollView>
+                  )}
+                </View>
+                <View style={styles.aiInputRow}>
+                  <TextInput style={styles.aiInput} value={aiQuestion} onChangeText={setAiQuestion} placeholder="Ask anything about this page..." placeholderTextColor="#9a9a9a" onSubmitEditing={submitAIQuestion} returnKeyType="send" />
+                  <TouchableOpacity onPress={submitAIQuestion} style={styles.goBtn}><Text style={styles.goBtnText}>Ask</Text></TouchableOpacity>
+                </View>
+                <TouchableOpacity onPress={() => setShowAIPanel(false)} style={styles.closeModalBtn}><Text style={styles.closeModalBtnText}>Close</Text></TouchableOpacity>
+              </Animated.View>
+            </KeyboardAvoidingView>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* 5. AI Service Provider Config Settings */}
+      {aiSettingsMounted && (
+        <Modal visible={aiSettingsMounted} animationType="none" transparent onRequestClose={() => setShowAISettings(false)}>
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAISettings(false)}>
+            <Animated.View style={[styles.modalCard, { transform: [{ translateY: aiSettingsAnim }] }]} onStartShouldSetResponder={() => true}>
+              <Text style={styles.modalTitle}>AI service provider</Text>
+              <ScrollView style={{ maxHeight: '85%' }}>
+                <TouchableOpacity style={styles.providerRow} onPress={() => selectProviderMode('none')}>
+                  <View style={[styles.radioOuter, aiProvider.mode === 'none' && styles.radioOuterActive]}>{aiProvider.mode === 'none' && <View style={styles.radioInner} />}</View>
+                  <View><Text style={styles.providerLabel}>None</Text></View>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.providerRow} onPress={() => selectProviderMode('default')}>
+                  <View style={[styles.radioOuter, aiProvider.mode === 'default' && styles.radioOuterActive]}>{aiProvider.mode === 'default' && <View style={styles.radioInner} />}</View>
+                  <View><Text style={styles.providerLabel}>{isAdmin ? 'Default' : '🔒 Default'}</Text></View>
+                </TouchableOpacity>
+                <TextInput style={styles.apiKeyInput} value={customKeyInput} onChangeText={setCustomKeyInput} placeholder="Paste your Groq API key here" placeholderTextColor="#9a9a9a" secureTextEntry />
+                <TouchableOpacity onPress={saveCustomKey} style={styles.newTabBtn}><Text style={styles.newTabBtnText}>Save Key</Text></TouchableOpacity>
+              </ScrollView>
+              <TouchableOpacity onPress={() => setShowAISettings(false)} style={styles.closeModalBtn}><Text style={styles.closeModalBtnText}>Close</Text></TouchableOpacity>
+            </Animated.View>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* 6. Autofill Draft Information Pane */}
+      {autofillMounted && (
+        <Modal visible={autofillMounted} animationType="none" transparent onRequestClose={() => setShowAutofillSettings(false)}>
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAutofillSettings(false)}>
+            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%' }}>
+              <Animated.View style={[styles.modalCard, { transform: [{ translateY: autofillAnim }] }]} onStartShouldSetResponder={() => true}>
+                <Text style={styles.modalTitle}>My info (for Autofill)</Text>
+                <ScrollView style={{ maxHeight: 300 }} keyboardShouldPersistTaps="handled">
+                  <TextInput style={styles.apiKeyInput} value={autofillDraft.fullName} onChangeText={(t) => setAutofillDraft({...autofillDraft, fullName: t})} placeholder="Full name" />
+                  <TextInput style={styles.apiKeyInput} value={autofillDraft.email} onChangeText={(t) => setAutofillDraft({...autofillDraft, email: t})} placeholder="Email" keyboardType="email-address" />
+                  <TextInput style={styles.apiKeyInput} value={autofillDraft.phone} onChangeText={(t) => setAutofillDraft({...autofillDraft, phone: t})} placeholder="Phone number" keyboardType="phone-pad" />
+                </ScrollView>
+                <TouchableOpacity onPress={saveAutofillProfile} style={styles.newTabBtn}><Text style={styles.newTabBtnText}>Save Info</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowAutofillSettings(false)} style={styles.closeModalBtn}><Text style={styles.closeModalBtnText}>Close</Text></TouchableOpacity>
+              </Animated.View>
+            </KeyboardAvoidingView>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* Floating menu quick action options pane */}
+      <Modal visible={showFloatingMenu} animationType="fade" transparent onRequestClose={() => setShowFloatingMenu(false)}>
+        <TouchableOpacity style={styles.floatingMenuOverlay} activeOpacity={1} onPress={() => setShowFloatingMenu(false)}>
           <View style={styles.floatingMenuCard}>
-            <TouchableOpacity
-              style={styles.floatingMenuItem}
-              onPress={() => {
-                setShowFloatingMenu(false);
-                copyPageText();
-              }}
-            >
-              <Text style={styles.floatingMenuText}>📋 Copy page text</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.floatingMenuItem}
-              onPress={() => {
-                setShowFloatingMenu(false);
-                runAIMode('explain');
-              }}
-            >
-              <Text style={styles.floatingMenuText}>📖 Explain this page</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.floatingMenuItem}
-              onPress={() => {
-                setShowFloatingMenu(false);
-                openAIPanelBlank();
-              }}
-            >
-              <Text style={styles.floatingMenuText}>✨ Ask AI</Text>
-            </TouchableOpacity>
+            <TouchableOpacity style={styles.floatingMenuItem} onPress={() => { setShowFloatingMenu(false); Clipboard.setStringAsync(activeTab?.url || ''); Alert.alert('Copied link'); }}><Text style={styles.floatingMenuText}>📋 Copy link text</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.floatingMenuItem} onPress={() => { setShowFloatingMenu(false); runAIMode('explain'); }}><Text style={styles.floatingMenuText}>📖 Explain this page</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.floatingMenuItem} onPress={() => { setShowFloatingMenu(false); setShowAIPanel(true); }}><Text style={styles.floatingMenuText}>✨ Ask AI</Text></TouchableOpacity>
           </View>
         </TouchableOpacity>
       </Modal>
 
-      {/* Tab switcher modal — grid of live thumbnails, Chrome-style */}
-      <Modal visible={showTabSwitcher} animationType="slide" transparent onRequestClose={() => setShowTabSwitcher(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowTabSwitcher(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Tabs</Text>
-            <FlatList
-              data={tabs}
-              keyExtractor={(t) => String(t.id)}
-              numColumns={2}
-              columnWrapperStyle={{ gap: 10 }}
-              contentContainerStyle={{ gap: 10 }}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[styles.tabThumbCard, item.id === activeTabId && styles.tabThumbCardActive]}
-                  onPress={() => switchTab(item.id)}
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.tabThumbPreview}>
-                    {item.thumbnail ? (
-                      <Image source={{ uri: item.thumbnail }} style={styles.tabThumbImg} resizeMode="cover" />
-                    ) : (
-                      <View style={styles.tabThumbPlaceholder}>
-                        <Text style={styles.tabThumbPlaceholderIcon}>
-                          {item.url === HOME_MARKER ? '🏠' : item.isIncognito ? '🕵️' : '🌐'}
-                        </Text>
-                      </View>
-                    )}
-                    <TouchableOpacity
-                      onPress={() => closeTab(item.id)}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                      style={styles.tabThumbCloseX}
-                    >
-                      <Text style={styles.closeX}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <Text numberOfLines={1} style={styles.tabThumbTitle}>
-                    {item.isIncognito ? '🕵️ ' : ''}{item.title || item.url}
-                  </Text>
-                </TouchableOpacity>
-              )}
-            />
-            <TouchableOpacity onPress={() => addTab()} style={styles.newTabBtn}>
-              <Text style={styles.newTabBtnText}>+ New Tab</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setShowTabSwitcher(false)} style={styles.closeModalBtn}>
-              <Text style={styles.closeModalBtnText}>Close</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Library page — Bookmarks / History / Saved pages tabs, full-page slide-in from the right */}
+      {/* Library Panel Slide-In */}
       {libraryMounted && (
         <Modal visible={libraryMounted} animationType="none" transparent onRequestClose={closeLibrary}>
-          <Animated.View
-            style={[
-              styles.libraryPage,
-              nightMode && styles.libraryPageNight,
-              { transform: [{ translateX: libraryPanelAnim }] },
-            ]}
-          >
+          <Animated.View style={[styles.libraryPage, nightMode && styles.libraryPageNight, { transform: [{ translateX: libraryPanelAnim }] }]}>
             <View style={styles.libraryHeaderRow}>
-              <TouchableOpacity onPress={closeLibrary} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Ionicons name="chevron-back" size={26} color={nightMode ? '#eee' : '#333'} />
-              </TouchableOpacity>
+              <TouchableOpacity onPress={closeLibrary}><Ionicons name="chevron-back" size={26} color={nightMode ? '#eee' : '#333'} /></TouchableOpacity>
               <View style={styles.libraryTabsRow}>
-                {[
-                  { key: 'bookmarks', label: 'Bookmarks' },
-                  { key: 'history', label: 'History' },
-                  { key: 'downloads', label: 'Downloads' },
-                ].map((t) => (
+                {[{ key: 'bookmarks', label: 'Bookmarks' }, { key: 'history', label: 'History' }, { key: 'downloads', label: 'Saved pages' }].map((t) => (
                   <TouchableOpacity key={t.key} onPress={() => switchLibraryTab(t.key)} style={{ marginLeft: 22 }}>
-                    <Text
-                      style={[
-                        styles.libraryTabText,
-                        libraryTab === t.key && styles.libraryTabTextActive,
-                        nightMode && !(libraryTab === t.key) && { color: '#888' },
-                      ]}
-                    >
-                      {t.label}
-                    </Text>
+                    <Text style={[styles.libraryTabText, libraryTab === t.key && styles.libraryTabTextActive, nightMode && !(libraryTab === t.key) && { color: '#888' }]}>{t.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
             </View>
-
-            <View style={[styles.librarySearchBar, nightMode && styles.homeSearchInputNight]}>
-              <Ionicons name="search-outline" size={18} color={nightMode ? '#999' : '#888'} />
-              <TextInput
-                style={[styles.librarySearchInput, nightMode && { color: '#fff' }]}
-                value={librarySearch}
-                onChangeText={setLibrarySearch}
-                placeholder="Search"
-                placeholderTextColor={nightMode ? '#888' : '#9a9a9a'}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-            </View>
-
             <FlatList
               data={buildLibraryRows()}
               keyExtractor={(row) => row.key}
-              contentContainerStyle={{ paddingBottom: 20 }}
               renderItem={({ item: row }) => {
-                if (row.type === 'header') {
-                  return (
-                    <Text style={[styles.libraryDateHeader, nightMode && { color: '#888' }]}>{row.label}</Text>
-                  );
-                }
+                if (row.type === 'header') return <Text style={styles.libraryDateHeader}>{row.label}</Text>;
                 const item = row.data;
-                const iconName =
-                  row.kind === 'bookmarks' ? 'star' : row.kind === 'downloads' ? 'document-outline' : 'time-outline';
-                const title = item.title || item.name || item.url;
-                const subtitle = row.kind === 'downloads' || row.kind === 'history' ? item.url : item.url;
-                const onOpen = () => {
-                  if (row.kind === 'downloads') {
-                    openDownload(item);
-                    return;
-                  }
-                  setUrlInput(item.url);
-                  updateTab(activeTabId, { url: item.url, loading: true });
-                  closeLibrary();
-                };
-                const onRemove =
-                  row.kind === 'bookmarks'
-                    ? () => removeBookmark(item.url)
-                    : row.kind === 'downloads'
-                    ? () => deleteDownload(item)
-                    : null;
                 return (
                   <View style={styles.libraryRow}>
-                    <View style={[styles.libraryRowIcon, nightMode && { backgroundColor: '#222' }]}>
-                      <Ionicons name={iconName} size={16} color={nightMode ? '#aaa' : '#666'} />
-                    </View>
-                    <TouchableOpacity style={{ flex: 1 }} onPress={onOpen}>
-                      <Text numberOfLines={1} style={[styles.tabRowText, nightMode && { color: '#eee' }]}>
-                        {title}
-                      </Text>
-                      <Text numberOfLines={1} style={styles.tabRowSubtext}>
-                        {subtitle}
-                      </Text>
+                    <TouchableOpacity style={{ flex: 1 }} onPress={() => { if(row.kind === 'downloads') openDownload(item); else { setUrlInput(item.url); updateTab(activeTabId, { url: item.url, loading: true }); closeLibrary(); } }}>
+                      <Text numberOfLines={1} style={styles.tabRowText}>{item.title || item.name || item.url}</Text>
                     </TouchableOpacity>
-                    {onRemove && (
-                      <TouchableOpacity onPress={onRemove} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                        <Text style={styles.closeX}>✕</Text>
-                      </TouchableOpacity>
-                    )}
+                    <TouchableOpacity onPress={() => { if(row.kind==='bookmarks') removeBookmark(item.url); else if(row.kind==='downloads') deleteDownload(item); }}><Text style={styles.closeX}>✕</Text></TouchableOpacity>
                   </View>
                 );
               }}
-              ListEmptyComponent={
-                <Text style={styles.emptyText}>
-                  {libraryTab === 'bookmarks'
-                    ? 'No bookmarks yet — tap ☆ on any page'
-                    : libraryTab === 'downloads'
-                    ? 'No downloads yet — files you download from a page will show up here'
-                    : 'No history yet'}
-                </Text>
-              }
             />
-
-            <View style={[styles.libraryBottomBar, nightMode && { borderColor: '#222' }]}>
-              <TouchableOpacity onPress={closeLibrary}>
-                <Text style={[styles.libraryBottomBtnText, nightMode && { color: '#eee' }]}>Close</Text>
-              </TouchableOpacity>
-              {libraryTab === 'history' && history.length > 0 && (
-                <TouchableOpacity onPress={clearHistory}>
-                  <Text style={[styles.libraryBottomBtnText, { color: '#d1453b' }]}>Delete all</Text>
-                </TouchableOpacity>
-              )}
-            </View>
           </Animated.View>
         </Modal>
       )}
-
-      {/* AI subpage — opens full-height from the floating 🔍 button (Explain / Ask AI).
-          There's no separate "find answers" mode: the user just types whatever they
-          want to know about the screen into the input below and Ask AI answers it. */}
-      <Modal visible={showAIPanel} animationType="slide" transparent onRequestClose={() => setShowAIPanel(false)}>
-        <TouchableOpacity
-          style={styles.aiOverlay}
-          activeOpacity={1}
-          onPress={() => setShowAIPanel(false)}
-        >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={{ width: '100%' }}
-        >
-          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.aiCard}>
-            <View style={styles.aiHeaderRow}>
-              <Text style={styles.modalTitle}>
-                {aiMode === 'explain' ? '📖 Explaining this page' : '✨ Ask AI'}
-              </Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setCustomKeyInput(aiProvider.apiKey || '');
-                  setCustomModelInput(aiProvider.model || DEFAULT_MODEL);
-                  setShowAISettings(true);
-                }}
-                style={styles.settingsGearBtn}
-              >
-                <Text style={styles.settingsGearText}>⚙️</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={{ flex: 1 }}>
-              {aiLoading ? (
-                <View style={styles.aiLoadingWrap}>
-                  <ActivityIndicator size="large" color="#5B5FEF" />
-                  <Text style={styles.aiLoadingText}>{AI_MODES[aiMode]?.hint || 'Thinking…'}</Text>
-                </View>
-              ) : (
-                <ScrollView
-                  style={{ flex: 1 }}
-                  contentContainerStyle={{ paddingBottom: 20 }}
-                  showsVerticalScrollIndicator
-                  keyboardShouldPersistTaps="handled"
-                >
-                  <Text style={[styles.aiAnswer, aiError && styles.aiAnswerError]}>
-                    {aiAnswer || 'Ask anything about what\u2019s on screen right now — I\u2019ll read the page and answer.'}
-                  </Text>
-                </ScrollView>
-              )}
-            </View>
-
-            <View style={styles.aiInputRow}>
-              <TextInput
-                style={styles.aiInput}
-                value={aiQuestion}
-                onChangeText={setAiQuestion}
-                placeholder="Ask anything about this page..."
-                placeholderTextColor="#9a9a9a"
-                onSubmitEditing={submitAIQuestion}
-                returnKeyType="send"
-              />
-              <TouchableOpacity onPress={submitAIQuestion} style={styles.goBtn}>
-                <Text style={styles.goBtnText}>Ask</Text>
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity onPress={() => setShowAIPanel(false)} style={styles.closeModalBtn}>
-              <Text style={styles.closeModalBtnText}>Close</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </KeyboardAvoidingView>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* AI Settings modal — None / Default (app key) / Custom key, Via-style */}
-      <Modal visible={showAISettings} animationType="slide" transparent onRequestClose={() => setShowAISettings(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAISettings(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
-            <Text style={styles.modalTitle}>AI service provider</Text>
-
-            <TouchableOpacity style={styles.providerRow} onPress={() => selectProviderMode('none')}>
-              <View style={[styles.radioOuter, aiProvider.mode === 'none' && styles.radioOuterActive]}>
-                {aiProvider.mode === 'none' && <View style={styles.radioInner} />}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.providerLabel}>None</Text>
-                <Text style={styles.providerSubtext}>Turn AI features off</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.providerRow} onPress={() => selectProviderMode('default')}>
-              <View style={[styles.radioOuter, aiProvider.mode === 'default' && styles.radioOuterActive]}>
-                {aiProvider.mode === 'default' && <View style={styles.radioInner} />}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.providerLabel}>{isAdmin ? 'Default' : '🔒 Default'}</Text>
-                <Text style={styles.providerSubtext}>
-                  {isAdmin ? "Uses the app's built-in AI backend" : 'Locked — admin only'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            {!isAdmin && (
-              <TouchableOpacity onPress={() => setShowAdminPrompt(true)} style={{ paddingVertical: 6 }}>
-                <Text style={{ color: '#5B5FEF', fontSize: 13, fontWeight: '600' }}>Unlock Admin Access</Text>
-              </TouchableOpacity>
-            )}
-
-            <View style={styles.providerRow}>
-              <TouchableOpacity
-                style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
-                onPress={() => aiProvider.mode === 'custom' || setShowAISettings(true)}
-              >
-                <View style={[styles.radioOuter, aiProvider.mode === 'custom' && styles.radioOuterActive]}>
-                  {aiProvider.mode === 'custom' && <View style={styles.radioInner} />}
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.providerLabel}>Custom (your own key)</Text>
-                  <Text style={styles.providerSubtext}>Use your personal Groq API key</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={styles.apiKeyInput}
-              value={customKeyInput}
-              onChangeText={setCustomKeyInput}
-              placeholder="Paste your Groq API key here"
-              placeholderTextColor="#9a9a9a"
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry
-            />
-
-            <TouchableOpacity onPress={saveCustomKey} style={styles.newTabBtn}>
-              <Text style={styles.newTabBtnText}>Save & Use Custom Key</Text>
-            </TouchableOpacity>
-
-            {/* ---------- Model switcher ---------- */}
-            <Text style={[styles.modalTitle, { fontSize: 15, marginTop: 18 }]}>AI Model</Text>
-            <ScrollView style={{ maxHeight: 160 }} nestedScrollEnabled>
-              {KNOWN_MODELS.map((m) => {
-                const active = (aiProvider.model || DEFAULT_MODEL) === m.id;
-                return (
-                  <TouchableOpacity key={m.id} style={styles.providerRow} onPress={() => selectModel(m.id)}>
-                    <View style={[styles.radioOuter, active && styles.radioOuterActive]}>
-                      {active && <View style={styles.radioInner} />}
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.providerLabel}>{m.label}</Text>
-                      <Text style={styles.providerSubtext}>{m.hint}</Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-
-            <Text style={[styles.providerSubtext, { marginTop: 8 }]}>Or add your own model ID (from Groq's model list):</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
-              <TextInput
-                style={[styles.apiKeyInput, { flex: 1, marginTop: 0 }]}
-                value={customModelInput}
-                onChangeText={setCustomModelInput}
-                placeholder="e.g. openai/gpt-oss-120b"
-                placeholderTextColor="#9a9a9a"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <TouchableOpacity onPress={saveCustomModel} style={[styles.goBtn, { marginLeft: 8 }]}>
-                <Text style={styles.goBtnText}>Use</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={[styles.providerSubtext, { marginTop: 6 }]}>Current: {aiProvider.model || DEFAULT_MODEL}</Text>
-
-            <TouchableOpacity onPress={() => setShowAISettings(false)} style={styles.closeModalBtn}>
-              <Text style={styles.closeModalBtnText}>Close</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Autofill "My info" modal — plain contact/address fields only, saved on-device.
-          runAutofill() only ever writes these into fields it recognizes as the SAME
-          category (name/email/phone/address/etc.) — never into open text/quiz fields —
-          so this can't be used to auto-answer exam or quiz questions. */}
-      <Modal visible={showAutofillSettings} animationType="slide" transparent onRequestClose={() => setShowAutofillSettings(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAutofillSettings(false)}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%' }}>
-            <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
-              <Text style={styles.modalTitle}>My info (for Autofill)</Text>
-              <Text style={[styles.providerSubtext, { marginBottom: 10 }]}>
-                Saved only on this device. "Fill form" uses this to fill just your name,
-                email, phone, and address into a page — it never touches question/answer
-                fields, so it's safe to use in class without it filling in test answers.
-              </Text>
-              <ScrollView style={{ maxHeight: 340 }} keyboardShouldPersistTaps="handled">
-                {[
-                  { key: 'fullName', label: 'Full name', kb: 'default' },
-                  { key: 'email', label: 'Email', kb: 'email-address' },
-                  { key: 'phone', label: 'Phone number', kb: 'phone-pad' },
-                  { key: 'address', label: 'Address', kb: 'default' },
-                  { key: 'city', label: 'City', kb: 'default' },
-                  { key: 'state', label: 'State', kb: 'default' },
-                  { key: 'pincode', label: 'PIN / ZIP code', kb: 'number-pad' },
-                  { key: 'country', label: 'Country', kb: 'default' },
-                ].map((f) => (
-                  <View key={f.key} style={{ marginBottom: 10 }}>
-                    <Text style={[styles.providerSubtext, { marginBottom: 4 }]}>{f.label}</Text>
-                    <TextInput
-                      style={[styles.apiKeyInput, { marginTop: 0 }]}
-                      value={autofillDraft[f.key]}
-                      onChangeText={(t) => setAutofillDraft((prev) => ({ ...prev, [f.key]: t }))}
-                      placeholder={f.label}
-                      placeholderTextColor="#9a9a9a"
-                      keyboardType={f.kb}
-                      autoCapitalize={f.key === 'email' ? 'none' : 'words'}
-                      autoCorrect={false}
-                    />
-                  </View>
-                ))}
-              </ScrollView>
-
-              <TouchableOpacity onPress={saveAutofillProfile} style={styles.newTabBtn}>
-                <Text style={styles.newTabBtnText}>Save info</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setShowAutofillSettings(false)} style={styles.closeModalBtn}>
-                <Text style={styles.closeModalBtnText}>Close</Text>
-              </TouchableOpacity>
-            </TouchableOpacity>
-          </KeyboardAvoidingView>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Admin passcode prompt — unlocks the shared "Default" backend on this device */}
-      <Modal visible={showAdminPrompt} animationType="fade" transparent onRequestClose={() => setShowAdminPrompt(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAdminPrompt(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Admin Access</Text>
-            <Text style={styles.providerSubtext}>Enter the admin passcode to use the shared Default backend.</Text>
-            <TextInput
-              style={[styles.apiKeyInput, { marginTop: 14 }]}
-              value={adminPasscodeInput}
-              onChangeText={(t) => {
-                setAdminPasscodeInput(t);
-                setAdminError(false);
-              }}
-              placeholder="Passcode"
-              placeholderTextColor="#9a9a9a"
-              secureTextEntry
-              autoCapitalize="none"
-              autoCorrect={false}
-              onSubmitEditing={submitAdminPasscode}
-            />
-            {adminError && <Text style={{ color: '#d1453b', fontSize: 12, marginTop: 6 }}>Incorrect passcode.</Text>}
-            <TouchableOpacity onPress={submitAdminPasscode} style={styles.newTabBtn}>
-              <Text style={styles.newTabBtnText}>Unlock</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => {
-                setShowAdminPrompt(false);
-                setAdminPasscodeInput('');
-                setAdminError(false);
-              }}
-              style={styles.closeModalBtn}
-            >
-              <Text style={styles.closeModalBtnText}>Cancel</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#fff' },
-  incognitoBanner: {
-    backgroundColor: '#1a1a1a',
-    paddingVertical: 6,
-    alignItems: 'center',
-  },
-  incognitoBannerText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  urlBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderColor: '#ececec',
-  },
+  urlBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 10, backgroundColor: '#fff', borderBottomWidth: 1, borderColor: '#ececec' },
   homeBtn: { paddingHorizontal: 6, paddingVertical: 6 },
   homeBtnText: { fontSize: 18, color: '#5B5FEF' },
-  urlInput: {
-    flex: 1,
-    backgroundColor: '#f1f1f3',
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: '#111',
-  },
+  urlInput: { flex: 1, backgroundColor: '#f1f1f3', borderRadius: 24, paddingHorizontal: 16, paddingVertical: 10, fontSize: 15, color: '#111' },
   starBtn: { paddingHorizontal: 8, paddingVertical: 6 },
   starBtnText: { fontSize: 20, color: '#c9c9c9' },
   starActive: { color: '#f5a623' },
-  goBtn: {
-    marginLeft: 6,
-    backgroundColor: '#5B5FEF',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
+  goBtn: { marginLeft: 6, backgroundColor: '#5B5FEF', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20 },
   goBtnText: { color: '#fff', fontWeight: '600' },
-  progressTrack: { height: 2, backgroundColor: 'transparent' },
-  progressFill: { height: 2, backgroundColor: '#5B5FEF' },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-  },
-  errorText: { fontSize: 15, color: '#666', marginBottom: 12 },
-  retryBtn: { backgroundColor: '#5B5FEF', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
-  retryBtnText: { color: '#fff', fontWeight: '600' },
-
-  // Via-style bottom nav
-  toolbarWrap: {
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderColor: '#ececec',
-    ...Platform.select({
-      android: { elevation: 12 },
-      ios: {
-        shadowColor: '#000',
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: -3 },
-      },
-    }),
-  },
-  toolbar: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-  },
-  toolBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    minWidth: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toolBtnText: { fontSize: 20, color: '#333' },
-  toolBtnDisabled: { color: '#d0d0d0' },
-  tabCountBadge: {
-    minWidth: 24,
-    height: 24,
-    borderRadius: 8,
-    borderWidth: 1.5,
-    borderColor: '#333',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 5,
-  },
-  tabCountText: { fontSize: 12, fontWeight: '700', color: '#333' },
-  aiBtn: { backgroundColor: '#EDE9FE', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8 },
-  aiBtnText: { fontSize: 14, fontWeight: '700', color: '#5B5FEF' },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  modalCard: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 18,
-    maxHeight: '78%',
-  },
-
-  // ---- Library page (Bookmarks / History / Saved pages) ----
-  libraryPage: {
-    flex: 1,
-    backgroundColor: '#fff',
-    paddingTop: TOP_PADDING + 14,
-  },
-  libraryPageNight: { backgroundColor: '#111' },
-  libraryHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    marginBottom: 16,
-  },
-  libraryTabsRow: { flexDirection: 'row', marginLeft: 10 },
-  libraryTabText: { fontSize: 17, color: '#999', fontWeight: '600' },
-  libraryTabTextActive: { color: '#111' },
-  librarySearchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f1f1f3',
-    borderRadius: 24,
-    marginHorizontal: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    marginBottom: 12,
-  },
-  librarySearchInput: { flex: 1, marginLeft: 8, paddingVertical: 10, fontSize: 15, color: '#111' },
-  libraryDateHeader: {
-    fontSize: 13,
-    color: '#999',
-    fontWeight: '600',
-    paddingHorizontal: 16,
-    marginTop: 10,
-    marginBottom: 4,
-  },
-  libraryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  libraryRowIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    backgroundColor: '#f1f1f3',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  libraryBottomBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderColor: '#eee',
-    paddingVertical: 14,
-  },
-  libraryBottomBtnText: { fontSize: 15, fontWeight: '600', color: '#5B5FEF' },
-  // AI panel opens as a near-full-height "subpage" sliding up from the bottom
-  aiOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'flex-end',
-  },
-  aiCard: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    padding: 18,
-    width: '100%',
-    height: '92%',
-    ...Platform.select({
-      android: { elevation: 14 },
-      ios: { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } },
-    }),
-  },
-  aiHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  settingsGearBtn: { padding: 6 },
-  settingsGearText: { fontSize: 20 },
-  modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 10, color: '#111' },
-  modeRow: { flexDirection: 'row', marginBottom: 10 },
-  modeChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 20,
-    backgroundColor: '#f1f1f1',
-    marginRight: 8,
-  },
-  modeChipActive: { backgroundColor: '#5B5FEF' },
-  modeChipText: { fontSize: 13, color: '#333', fontWeight: '600' },
-  modeChipTextActive: { color: '#fff' },
-  tabRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderColor: '#eee',
-  },
-  tabRowActive: { backgroundColor: '#F5F4FF' },
-  tabRowText: { fontSize: 15, color: '#111' },
-  tabRowSubtext: { fontSize: 12, color: '#999', marginTop: 2 },
-  closeX: { fontSize: 16, color: '#999', paddingHorizontal: 8 },
-  newTabBtn: { marginTop: 10, paddingVertical: 12, alignItems: 'center', backgroundColor: '#5B5FEF', borderRadius: 12 },
-  newTabBtnText: { color: '#fff', fontWeight: '600' },
-  tabThumbCard: {
-    flex: 1,
-    maxWidth: '48.5%',
-    backgroundColor: '#F5F5F7',
-    borderRadius: 14,
-    padding: 6,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  tabThumbCardActive: { borderColor: '#5B5FEF' },
-  tabThumbPreview: {
-    width: '100%',
-    aspectRatio: 0.72,
-    borderRadius: 10,
-    overflow: 'hidden',
-    backgroundColor: '#E4E4EC',
-  },
-  tabThumbImg: { width: '100%', height: '100%' },
-  tabThumbPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  tabThumbPlaceholderIcon: { fontSize: 34 },
-  tabThumbCloseX: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
-    backgroundColor: 'rgba(255,255,255,0.85)',
-    borderRadius: 12,
-    width: 24,
-    height: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabThumbTitle: { fontSize: 12, color: '#222', marginTop: 6, paddingHorizontal: 2 },
-  closeModalBtn: { marginTop: 10, paddingVertical: 10, alignItems: 'center' },
-  closeModalBtnText: { color: '#5B5FEF', fontWeight: '600' },
-  clearHistoryBtn: { marginTop: 10, paddingVertical: 10, alignItems: 'center', backgroundColor: '#fdecec', borderRadius: 8 },
-  clearHistoryText: { color: '#d1453b', fontWeight: '600' },
-  aiAnswer: { fontSize: 15, lineHeight: 22, color: '#222' },
-  aiAnswerError: { color: '#d1453b' },
-  aiLoadingWrap: { alignItems: 'center', marginTop: 24 },
-  aiLoadingText: { marginTop: 10, color: '#666', fontSize: 13 },
-  qaItem: { marginBottom: 14, paddingBottom: 14, borderBottomWidth: 1, borderColor: '#eee' },
-  qaQuestion: { fontSize: 14, fontWeight: '700', color: '#111', marginBottom: 4 },
-  qaAnswer: { fontSize: 14, color: '#333', lineHeight: 20 },
-  aiInputRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
-  aiInput: {
-    flex: 1,
-    backgroundColor: '#f1f1f1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 15,
-    color: '#111',
-  },
-  emptyText: { textAlign: 'center', color: '#999', marginTop: 20 },
-
-  // AI Settings (provider) modal
-  providerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12 },
-  radioOuter: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: '#c9c9c9',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 14,
-  },
+  toolbarWrap: { backgroundColor: '#fff', borderTopWidth: 1, borderColor: '#ececec' },
+  toolbar: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingVertical: 12 },
+  toolBtn: { minWidth: 40, alignItems: 'center' },
+  tabCountBadge: { minWidth: 24, height: 24, borderRadius: 8, borderWidth: 1.5, borderColor: '#333', alignItems: 'center', justifyContent: 'center' },
+  tabCountText: { fontSize: 12, fontWeight: '700' },
+  homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 40, paddingHorizontal: 20 },
+  homeScreenNight: { backgroundColor: '#111' },
+  homeHeaderRow: { marginBottom: 40 },
+  homeHeaderTitle: { fontSize: 18, fontWeight: '600' },
+  homeCenterWrap: { width: '100%' },
+  homeSearchRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f1f1f3', borderRadius: 24, paddingHorizontal: 15, paddingVertical: 8 },
+  homeSearchInputInner: { flex: 1, fontSize: 15 },
+  homeSearchInputNight: { backgroundColor: '#222' },
+  homeGoBtnInner: { padding: 5 },
+  
+  // Custom Smooth Sheets Structural System Styling Layout
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  modalCard: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 18, maxHeight: '82%', width: '100%' },
+  menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  menuSheet: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, width: '100%' },
+  
+  menuGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 15 },
+  menuItem: { width: '20%', alignItems: 'center' },
+  menuIcon: { fontSize: 24 },
+  menuIconActiveAdBlock: { color: '#5B5FEF', transform: [{ scale: 1.1 }] },
+  menuLabel: { fontSize: 11, color: '#333', marginTop: 5, textAlign: 'center' },
+  modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 15, color: '#111' },
+  providerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderColor: '#f1f1f5' },
+  radioOuter: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#c9c9c9', alignItems: 'center', justifyContent: 'center', marginRight: 14 },
   radioOuterActive: { borderColor: '#5B5FEF' },
   radioInner: { width: 11, height: 11, borderRadius: 6, backgroundColor: '#5B5FEF' },
-  providerLabel: { fontSize: 16, color: '#111', fontWeight: '600' },
+  providerLabel: { fontSize: 15, color: '#111', fontWeight: '600' },
   providerSubtext: { fontSize: 12, color: '#999', marginTop: 2 },
-  apiKeyInput: {
-    backgroundColor: '#f1f1f1',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-    color: '#111',
-    marginTop: 8,
-  },
+  closeModalBtn: { marginTop: 20, paddingVertical: 10, alignItems: 'center' },
+  closeModalBtnText: { color: '#5B5FEF', fontWeight: '600' },
+  apiKeyInput: { backgroundColor: '#f1f1f1', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, marginTop: 8 },
+  tabThumbCard: { flex: 1, maxWidth: '48.5%', backgroundColor: '#F5F5F7', borderRadius: 14, padding: 6, borderWidth: 2, borderColor: 'transparent' },
+  tabThumbCardActive: { borderColor: '#5B5FEF' },
+  tabThumbPreview: { width: '100%', aspectRatio: 0.72, borderRadius: 10, overflow: 'hidden', backgroundColor: '#E4E4EC', justifyContent: 'center', alignItems: 'center' },
+  tabThumbPlaceholderIcon: { fontSize: 34 },
+  tabThumbCloseX: { position: 'absolute', top: 4, right: 4, backgroundColor: 'rgba(255,255,255,0.85)', borderRadius: 12, width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
+  closeX: { fontSize: 16, color: '#999' },
+  tabThumbTitle: { fontSize: 12, color: '#222', marginTop: 6, paddingHorizontal: 2 },
+  newTabBtn: { marginTop: 10, paddingVertical: 12, alignItems: 'center', backgroundColor: '#5B5FEF', borderRadius: 12 },
+  newTabBtnText: { color: '#fff', fontWeight: '600' },
 
-  // ---- Homepage (native, Via-style) ----
-  homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 18, paddingHorizontal: 20 },
-  homeScreenNight: { backgroundColor: '#111' },
-  homeHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginBottom: 60,
-  },
-  homeHeaderTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
-  homeCenterWrap: { flex: 1, width: '100%', alignItems: 'center' },
-  homeUrlBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    backgroundColor: '#f1f1f3',
-    borderRadius: 24,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    marginBottom: 60,
-  },
-  homeUrlBarNight: { backgroundColor: '#222' },
-  homeUrlBarInput: {
-    flex: 1,
-    marginLeft: 8,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: '#111',
-  },
-  homeBrand: { fontSize: 18, fontWeight: '700', color: '#333', textAlign: 'center' },
-  homeBrandNight: { color: '#eee' },
-  homeSearchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    backgroundColor: '#f1f1f3',
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: '#ececec',
-    paddingLeft: 16,
-    paddingRight: 6,
-    paddingVertical: 6,
-  },
-  homeSearchInputInner: {
-    flex: 1,
-    fontSize: 15,
-    color: '#111',
-    paddingVertical: 6,
-  },
-  homeSearchInputNight: { backgroundColor: '#222', borderColor: '#333', color: '#eee' },
-  homeGoBtnInner: {
-    backgroundColor: 'transparent',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  homeGoBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  aiOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
+  aiCard: { backgroundColor: '#fff', borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 18, width: '100%', height: '92%' },
+  aiHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  settingsGearBtn: { padding: 6 }, settingsGearText: { fontSize: 20 },
+  aiLoadingWrap: { alignItems: 'center', marginTop: 24 }, aiLoadingText: { marginTop: 10, color: '#666' },
+  aiAnswer: { fontSize: 15, lineHeight: 22, color: '#222' }, aiAnswerError: { color: '#d1453b' },
+  aiInputRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  aiInput: { flex: 1, backgroundColor: '#f1f1f1', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
 
-
-  // ---- Hamburger grid menu ----
-  menuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
-  menuSheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingTop: 20,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-  },
-  menuGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  menuItem: { width: '20%', alignItems: 'center', marginBottom: 20 },
-  menuIcon: { fontSize: 24, marginBottom: 6 },
-  menuIconActive: {
-    backgroundColor: '#5B5FEF',
-    color: '#fff',
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    overflow: 'hidden',
-  },
-  menuLabel: { fontSize: 11, color: '#333', textAlign: 'center' },
-  menuCloseChevron: { alignItems: 'center', paddingVertical: 8 },
-
-  // ---- Floating draggable "inspect" button ----
-  floatingBtn: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: 'transparent',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 999,
-  },
+  floatingBtn: { position: 'absolute', width: 54, height: 54, borderRadius: 27, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', zIndex: 999 },
   floatingBtnText: { fontSize: 30 },
-  tldrChip: {
-    position: 'absolute',
-    bottom: 90,
-    alignSelf: 'center',
-    backgroundColor: '#222',
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 24,
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowOffset: { width: 0, height: 3 },
-    shadowRadius: 6,
-    zIndex: 998,
-  },
-  tldrChipText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  tldrChip: { position: 'absolute', bottom: 90, alignSelf: 'center', backgroundColor: '#222', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 24, zIndex: 998 },
+  tldrChipText: { color: '#fff', fontWeight: '700' },
   floatingMenuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' },
-  floatingMenuCard: {
-    position: 'absolute',
-    right: 16,
-    bottom: 220,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    paddingVertical: 6,
-    minWidth: 220,
-    ...Platform.select({
-      android: { elevation: 8 },
-      ios: { shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
-    }),
-  },
+  floatingMenuCard: { position: 'absolute', right: 16, bottom: 220, backgroundColor: '#fff', borderRadius: 14, paddingVertical: 6, minWidth: 220 },
   floatingMenuItem: { paddingVertical: 12, paddingHorizontal: 16 },
   floatingMenuText: { fontSize: 14, color: '#222', fontWeight: '600' },
+
+  libraryPage: { flex: 1, backgroundColor: '#fff', paddingTop: 20 }, libraryPageNight: { backgroundColor: '#111' },
+  libraryHeaderRow: { flexDirection: 'row', alignItems: 'center', padding: 15 }, libraryTabsRow: { flexDirection: 'row' },
+  libraryTabText: { fontSize: 16, fontWeight: '600' }, libraryTabTextActive: { color: '#5B5FEF' },
+  libraryRow: { flexDirection: 'row', alignItems: 'center', padding: 15, borderBottomWidth: 1, borderColor: '#eee' },
+  tabRowText: { fontSize: 15 }, libraryDateHeader: { padding: 10, fontSize: 13, color: '#999' },
+
+  chromeDownloadToast: { position: 'absolute', bottom: 70, left: 12, right: 12, backgroundColor: '#ffffff', borderRadius: 12, padding: 14, elevation: 8, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 10, zIndex: 1000, borderWidth: 1, borderColor: '#e8e8e8' },
+  downloadInfoRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  downloadFileName: { fontSize: 14, fontWeight: '600', color: '#222', marginBottom: 2 },
+  downloadProgressText: { fontSize: 12, color: '#666' },
+  toastProgressBarTrack: { height: 4, backgroundColor: '#eef2f6', borderRadius: 2, marginTop: 10, overflow: 'hidden' },
+  toastProgressBarFill: { height: '100%', backgroundColor: '#5B5FEF' },
 });
