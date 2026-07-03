@@ -24,7 +24,9 @@ import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
-// ⚠️ Needs: expo install expo-clipboard
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+// ⚠️ Needs: expo install expo-clipboard expo-file-system expo-sharing
 
 // ⚠️ Point this to your deployed backend (see api/ask.js in this project)
 const AI_ENDPOINT = 'https://ai-browser-by-iswar.vercel.app/api/ask';
@@ -36,6 +38,7 @@ const HOME_URL = 'https://www.google.com';
 const HOME_MARKER = 'app://home';
 const HISTORY_KEY = 'history_v1';
 const BOOKMARKS_KEY = 'bookmarks_v1';
+const DOWNLOADS_KEY = 'downloads_v1';
 const AI_PROVIDER_KEY = 'ai_provider_v1';
 const ADMIN_UNLOCK_KEY = 'ai_admin_unlocked_v1';
 // ⚠️ Change this to your own secret. Only devices that enter this correctly
@@ -68,15 +71,15 @@ const MENU_ITEMS_DEF = [
   { key: 'share', icon: '🔗', label: 'Share' },
   { key: 'addBookmark', icon: '⭐', label: 'Add bookmark' },
   { key: 'desktop', icon: '🖥️', label: 'Desktop site' },
-  { key: 'aiTools', icon: '✨', label: 'AI Tools' },
   { key: 'settings', icon: '⚙️', label: 'Settings' },
 ];
 
-const AI_MODES = [
-  { key: 'ask', label: '💬 Ask', hint: 'Ask something about this page…' },
-  { key: 'explain', label: '📖 Explain', hint: 'Explaining the page…' },
-  { key: 'find_answers', label: '❓ Find Q&A', hint: 'Scanning page for questions…' },
-];
+// AI is only triggered from the floating 🔍 button now (see floatingMenu modal below),
+// so there's no mode-picker chip row anymore — just 'explain' (auto) and 'ask' (free text).
+const AI_MODES = {
+  ask: { hint: 'Thinking…' },
+  explain: { hint: 'Explaining the page…' },
+};
 
 // Builds the same style of prompt the backend (api/ask.js) uses, so a
 // user-supplied Groq key produces consistent results when calling Groq directly.
@@ -156,13 +159,14 @@ export default function App() {
   const [aiMode, setAiMode] = useState('ask');
   const [aiQuestion, setAiQuestion] = useState('');
   const [aiAnswer, setAiAnswer] = useState('');
-  const [aiItems, setAiItems] = useState(null); // for find_answers structured results
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(false);
   const [bookmarks, setBookmarks] = useState([]);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [downloads, setDownloads] = useState([]);
+  const [showDownloads, setShowDownloads] = useState(false);
 
   // ---------- AI provider settings ----------
   const [aiProvider, setAiProvider] = useState({ mode: 'none', apiKey: '' }); // 'default' | 'custom' | 'none'
@@ -187,6 +191,8 @@ export default function App() {
         if (storedBookmarks) setBookmarks(JSON.parse(storedBookmarks));
         const storedHistory = await AsyncStorage.getItem(HISTORY_KEY);
         if (storedHistory) setHistory(JSON.parse(storedHistory));
+        const storedDownloads = await AsyncStorage.getItem(DOWNLOADS_KEY);
+        if (storedDownloads) setDownloads(JSON.parse(storedDownloads));
         const storedAdmin = await AsyncStorage.getItem(ADMIN_UNLOCK_KEY);
         const adminUnlocked = storedAdmin === 'true';
         setIsAdmin(adminUnlocked);
@@ -242,6 +248,7 @@ export default function App() {
       if (showTabSwitcher) { setShowTabSwitcher(false); return true; }
       if (showBookmarks) { setShowBookmarks(false); return true; }
       if (showHistory) { setShowHistory(false); return true; }
+      if (showDownloads) { setShowDownloads(false); return true; }
 
       // On a real webpage with history → go back inside the page
       if (activeTab && activeTab.url !== HOME_MARKER && activeTab.canGoBack) {
@@ -283,6 +290,7 @@ export default function App() {
     showTabSwitcher,
     showBookmarks,
     showHistory,
+    showDownloads,
   ]);
 
   // ---------- Tab helpers ----------
@@ -322,6 +330,14 @@ export default function App() {
     const tab = tabs.find((t) => t.id === id);
     if (tab) setUrlInput(tab.url === HOME_MARKER ? '' : tab.url);
     setShowTabSwitcher(false);
+    // Re-apply night mode to whichever tab we just switched into, since each
+    // WebView's DOM is independent — the injected style only lives on the tab it
+    // was injected into.
+    if (tab && tab.url !== HOME_MARKER) {
+      setTimeout(() => {
+        webviewRefs.current[id]?.injectJavaScript(buildNightModeJS(nightMode));
+      }, 50);
+    }
   };
 
   // ---------- Navigation ----------
@@ -396,28 +412,37 @@ export default function App() {
   };
 
   // ---------- Night mode / Desktop site / Share (hamburger menu actions) ----------
-  const NIGHT_MODE_JS = `
-    (function() {
-      let s = document.getElementById('__ai_browser_night');
-      if (s) { s.remove(); }
-      else {
-        s = document.createElement('style');
-        s.id = '__ai_browser_night';
-        s.innerHTML = 'html{filter:invert(1) hue-rotate(180deg);background:#111;} img,video,picture,iframe{filter:invert(1) hue-rotate(180deg);}';
-        document.head.appendChild(s);
-      }
-    })();
-    true;
-  `;
-
-  const toggleNightMode = () => {
-    setNightMode((v) => !v);
-    webviewRefs.current[activeTabId]?.injectJavaScript(NIGHT_MODE_JS);
+  // Deterministic add/remove (instead of a DOM-presence "toggle") so it can be safely
+  // re-injected on every page load, tab switch, etc. without ever getting out of sync
+  // with the nightMode state.
+  const buildNightModeJS = (on) => {
+    const applyBlock = on
+      ? "if (!s) { s = document.createElement('style'); s.id = '__ai_browser_night'; " +
+        "s.innerHTML = 'html{filter:invert(1) hue-rotate(180deg) !important;background:#111 !important;} " +
+        "img,video,picture,iframe,canvas{filter:invert(1) hue-rotate(180deg) !important;}'; " +
+        "document.head.appendChild(s); }"
+      : "if (s) { s.remove(); }";
+    return (
+      "(function() { var s = document.getElementById('__ai_browser_night'); " + applyBlock + " })(); true;"
+    );
   };
 
+  const toggleNightMode = () => {
+    setNightMode((prev) => {
+      const next = !prev;
+      if (activeTab && activeTab.url !== HOME_MARKER) {
+        webviewRefs.current[activeTabId]?.injectJavaScript(buildNightModeJS(next));
+      }
+      return next;
+    });
+  };
+
+  // Changing the `userAgent` prop alone doesn't reliably re-request the page on
+  // Android — the WebView needs to be fully remounted for the new User-Agent to
+  // actually take effect. We do that by keying the WebView on desktopMode (see the
+  // `key` prop below), so just flipping the state here is enough.
   const toggleDesktopMode = () => {
     setDesktopMode((v) => !v);
-    setTimeout(() => webviewRefs.current[activeTabId]?.reload(), 60);
   };
 
   const shareCurrentPage = async () => {
@@ -446,6 +471,60 @@ export default function App() {
       return;
     }
     webviewRefs.current[activeTabId]?.injectJavaScript(COPY_TEXT_JS);
+  };
+
+  // ---------- Downloads ----------
+  // Fires from WebView's onFileDownload (Android only). Pulls the file into the
+  // app's own sandbox storage, then the user can open/share it (Save to Downloads,
+  // Drive, WhatsApp, etc.) via the system share sheet — no extra permissions needed.
+  const persistDownloads = async (updated) => {
+    setDownloads(updated);
+    await AsyncStorage.setItem(DOWNLOADS_KEY, JSON.stringify(updated));
+  };
+
+  const startDownload = async (url) => {
+    if (!url) return;
+    let filename = 'file';
+    try {
+      filename = decodeURIComponent(url.split('/').pop().split('?')[0]) || `download_${Date.now()}`;
+    } catch (e) {
+      filename = `download_${Date.now()}`;
+    }
+    const dest = FileSystem.documentDirectory + filename;
+    try {
+      const { uri } = await FileSystem.downloadAsync(url, dest);
+      const entry = { name: filename, uri, url, ts: Date.now() };
+      const updated = [entry, ...downloads];
+      await persistDownloads(updated);
+      Alert.alert('Download complete ✅', filename, [
+        { text: 'Later', style: 'cancel' },
+        { text: 'Open / Save', onPress: () => openDownload(entry) },
+      ]);
+    } catch (e) {
+      Alert.alert('Download failed', `Could not download ${filename}.`);
+    }
+  };
+
+  const openDownload = async (entry) => {
+    try {
+      const available = await Sharing.isAvailableAsync();
+      if (available) {
+        await Sharing.shareAsync(entry.uri);
+      } else {
+        Alert.alert('Sharing unavailable on this device', entry.uri);
+      }
+    } catch (e) {
+      Alert.alert('Could not open this file');
+    }
+  };
+
+  const deleteDownload = async (entry) => {
+    try {
+      await FileSystem.deleteAsync(entry.uri, { idempotent: true });
+    } catch (e) {
+      // ignore
+    }
+    await persistDownloads(downloads.filter((d) => d.uri !== entry.uri));
   };
 
   const floatingPos = useRef(new Animated.ValueXY({ x: SCREEN_W - 66, y: SCREEN_H - 260 })).current;
@@ -517,15 +596,15 @@ export default function App() {
     true;
   `;
 
-  const [pendingAIAction, setPendingAIAction] = useState(null); // mode key or null
+  const [pendingAIAction, setPendingAIAction] = useState(null); // { mode, question } or null
 
   const handleWebViewMessage = async (event) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
       if (data.type === 'PAGE_TEXT' && pendingAIAction) {
-        const mode = pendingAIAction;
+        const { mode, question } = pendingAIAction;
         setPendingAIAction(null);
-        await askAI({ mode, pageContext: data.text });
+        await askAI({ mode, question, pageContext: data.text });
       }
       if (data.type === 'COPY_TEXT') {
         await Clipboard.setStringAsync(data.text || '');
@@ -536,14 +615,18 @@ export default function App() {
     }
   };
 
+  // Auto-run mode (currently only 'explain') — extracts the page text first, then asks.
   const runAIMode = (mode) => {
+    if (!activeTab || activeTab.url === HOME_MARKER) {
+      Alert.alert('Open a page first', 'This works while you\u2019re viewing a webpage.');
+      return;
+    }
     setAiMode(mode);
     setShowAIPanel(true);
     setAiAnswer('');
-    setAiItems(null);
     setAiError(false);
     setAiLoading(true);
-    setPendingAIAction(mode);
+    setPendingAIAction({ mode, question: '' });
     webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS);
   };
 
@@ -551,7 +634,6 @@ export default function App() {
     setAiLoading(true);
     setAiError(false);
     setAiAnswer('');
-    setAiItems(null);
 
     if (aiProvider.mode === 'none') {
       setAiError(true);
@@ -573,12 +655,7 @@ export default function App() {
         json = await res.json();
         if (!res.ok) throw new Error(json.error || 'AI error');
       }
-
-      if (mode === 'find_answers') {
-        setAiItems(Array.isArray(json.items) ? json.items : []);
-      } else {
-        setAiAnswer(json.answer || 'No response from AI.');
-      }
+      setAiAnswer(json.answer || 'No response from AI.');
     } catch (err) {
       setAiError(true);
       setAiAnswer(
@@ -591,16 +668,28 @@ export default function App() {
     }
   };
 
+  // Free-form "Ask AI" — always pulls fresh page text first (if a real page is open)
+  // so the answer is grounded in what's actually on screen right now.
   const submitAIQuestion = () => {
-    if (!aiQuestion.trim()) return;
+    const q = aiQuestion.trim();
+    if (!q) return;
     setAiMode('ask');
-    askAI({ mode: 'ask', question: aiQuestion.trim() });
+    setShowAIPanel(true);
+    setAiAnswer('');
+    setAiError(false);
+    setAiLoading(true);
+    setAiQuestion('');
+    if (activeTab && activeTab.url !== HOME_MARKER) {
+      setPendingAIAction({ mode: 'ask', question: q });
+      webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS);
+    } else {
+      askAI({ mode: 'ask', question: q, pageContext: '' });
+    }
   };
 
   const openAIPanelBlank = () => {
     setAiMode('ask');
     setAiAnswer('');
-    setAiItems(null);
     setAiError(false);
     setShowAIPanel(true);
   };
@@ -664,16 +753,20 @@ export default function App() {
               key={tab.id}
               style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
             >
-              <View style={styles.homeScreen}>
+              <View style={[styles.homeScreen, nightMode && styles.homeScreenNight]}>
                 <View style={styles.homeLogoWrap}>
-                  <Text style={styles.homeBrand} numberOfLines={1} adjustsFontSizeToFit>
+                  <Text
+                    style={[styles.homeBrand, nightMode && styles.homeBrandNight]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
                     AI Browser by Ishwar
                   </Text>
                 </View>
 
                 <View style={styles.homeSearchRow}>
                   <TextInput
-                    style={styles.homeSearchInput}
+                    style={[styles.homeSearchInput, nightMode && styles.homeSearchInputNight]}
                     value={homeSearchInput}
                     onChangeText={setHomeSearchInput}
                     onSubmitEditing={openHomeSearch}
@@ -695,15 +788,29 @@ export default function App() {
               style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
             >
               <WebView
+                // Keying on desktopMode forces a full remount when the user toggles
+                // Desktop/Mobile site — Android WebView won't reliably re-request the
+                // page with a new User-Agent header otherwise.
+                key={`wv-${tab.id}-${desktopMode ? 'desktop' : 'mobile'}`}
                 ref={(ref) => (webviewRefs.current[tab.id] = ref)}
                 source={{ uri: tab.url }}
                 userAgent={desktopMode ? DESKTOP_UA : undefined}
                 incognito={tab.isIncognito}
+                onFileDownload={
+                  Platform.OS === 'android'
+                    ? ({ nativeEvent }) => startDownload(nativeEvent.downloadUrl)
+                    : undefined
+                }
                 onLoadStart={() => updateTab(tab.id, { loading: true })}
                 onLoadEnd={() => {
                   updateTab(tab.id, { loading: false });
                   const t = tabs.find((x) => x.id === tab.id);
                   if (!t?.isIncognito) addToHistory(t?.url, t?.title);
+                  // Re-apply night mode on every fresh page load — a newly loaded page
+                  // has a clean DOM, so the previously injected style is gone.
+                  if (nightMode && tab.id === activeTabId) {
+                    webviewRefs.current[tab.id]?.injectJavaScript(buildNightModeJS(true));
+                  }
                 }}
                 onNavigationStateChange={(navState) => {
                   updateTab(tab.id, {
@@ -766,9 +873,6 @@ export default function App() {
               <Text style={styles.tabCountText}>{tabs.length}</Text>
             </View>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => runAIMode('ask')} onLongPress={openAIPanelBlank} style={[styles.toolBtn, styles.aiBtn]}>
-            <Text style={styles.aiBtnText}>✨ AI</Text>
-          </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowMenu(true)} style={styles.toolBtn}>
             <Text style={styles.toolBtnText}>☰</Text>
           </TouchableOpacity>
@@ -789,12 +893,11 @@ export default function App() {
                     if (item.key === 'night') toggleNightMode();
                     else if (item.key === 'bookmarks') setShowBookmarks(true);
                     else if (item.key === 'history') setShowHistory(true);
-                    else if (item.key === 'downloads') Alert.alert('Downloads', 'Coming soon.');
+                    else if (item.key === 'downloads') setShowDownloads(true);
                     else if (item.key === 'incognito') openIncognitoTab();
                     else if (item.key === 'share') shareCurrentPage();
                     else if (item.key === 'addBookmark') toggleBookmark();
                     else if (item.key === 'desktop') toggleDesktopMode();
-                    else if (item.key === 'aiTools') runAIMode('find_answers');
                     else if (item.key === 'settings') {
                       setCustomKeyInput(aiProvider.apiKey || '');
                       setShowAISettings(true);
@@ -847,10 +950,10 @@ export default function App() {
               style={styles.floatingMenuItem}
               onPress={() => {
                 setShowFloatingMenu(false);
-                runAIMode('find_answers');
+                runAIMode('explain');
               }}
             >
-              <Text style={styles.floatingMenuText}>🔍 Find answers on screen</Text>
+              <Text style={styles.floatingMenuText}>📖 Explain this page</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.floatingMenuItem}
@@ -977,15 +1080,53 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* AI panel — floating card, not a bottom sheet */}
-      <Modal visible={showAIPanel} animationType="fade" transparent onRequestClose={() => setShowAIPanel(false)}>
+      {/* Downloads modal */}
+      <Modal visible={showDownloads} animationType="slide" transparent onRequestClose={() => setShowDownloads(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Downloads</Text>
+            <FlatList
+              data={downloads}
+              keyExtractor={(d, i) => String(i) + d.ts}
+              renderItem={({ item }) => (
+                <View style={styles.tabRow}>
+                  <TouchableOpacity style={{ flex: 1 }} onPress={() => openDownload(item)}>
+                    <Text numberOfLines={1} style={styles.tabRowText}>
+                      {item.name}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.tabRowSubtext}>
+                      {new Date(item.ts).toLocaleString()}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => deleteDownload(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <Text style={styles.closeX}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              ListEmptyComponent={
+                <Text style={styles.emptyText}>No downloads yet — files you download from a page will show up here</Text>
+              }
+            />
+            <TouchableOpacity onPress={() => setShowDownloads(false)} style={styles.closeModalBtn}>
+              <Text style={styles.closeModalBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* AI subpage — opens full-height from the floating 🔍 button (Explain / Ask AI).
+          There's no separate "find answers" mode: the user just types whatever they
+          want to know about the screen into the input below and Ask AI answers it. */}
+      <Modal visible={showAIPanel} animationType="slide" transparent onRequestClose={() => setShowAIPanel(false)}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.aiOverlay}
         >
           <View style={styles.aiCard}>
             <View style={styles.aiHeaderRow}>
-              <Text style={styles.modalTitle}>✨ Ask AI about this page</Text>
+              <Text style={styles.modalTitle}>
+                {aiMode === 'explain' ? '📖 Explaining this page' : '✨ Ask AI'}
+              </Text>
               <TouchableOpacity
                 onPress={() => {
                   setCustomKeyInput(aiProvider.apiKey || '');
@@ -997,42 +1138,15 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
-            {/* Mode chips */}
-            <View style={styles.modeRow}>
-              {AI_MODES.map((m) => (
-                <TouchableOpacity
-                  key={m.key}
-                  onPress={() => runAIMode(m.key)}
-                  style={[styles.modeChip, aiMode === m.key && styles.modeChipActive]}
-                >
-                  <Text style={[styles.modeChipText, aiMode === m.key && styles.modeChipTextActive]}>{m.label}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
             <View style={{ flex: 1 }}>
               {aiLoading ? (
                 <View style={styles.aiLoadingWrap}>
                   <ActivityIndicator size="large" color="#5B5FEF" />
-                  <Text style={styles.aiLoadingText}>
-                    {AI_MODES.find((m) => m.key === aiMode)?.hint || 'Thinking…'}
-                  </Text>
+                  <Text style={styles.aiLoadingText}>{AI_MODES[aiMode]?.hint || 'Thinking…'}</Text>
                 </View>
-              ) : aiItems ? (
-                <FlatList
-                  data={aiItems}
-                  keyExtractor={(item, i) => String(i)}
-                  ListEmptyComponent={<Text style={styles.aiAnswer}>No questions found on this page.</Text>}
-                  renderItem={({ item }) => (
-                    <View style={styles.qaItem}>
-                      <Text style={styles.qaQuestion}>Q: {item.question}</Text>
-                      <Text style={styles.qaAnswer}>A: {item.answer}</Text>
-                    </View>
-                  )}
-                />
               ) : (
                 <Text style={[styles.aiAnswer, aiError && styles.aiAnswerError]}>
-                  {aiAnswer || 'Pick a mode above, or type a question below.'}
+                  {aiAnswer || 'Ask anything about what\u2019s on screen right now — I\u2019ll read the page and answer.'}
                 </Text>
               )}
             </View>
@@ -1042,7 +1156,7 @@ export default function App() {
                 style={styles.aiInput}
                 value={aiQuestion}
                 onChangeText={setAiQuestion}
-                placeholder="Ask something about this page..."
+                placeholder="Ask anything about this page..."
                 placeholderTextColor="#9a9a9a"
                 onSubmitEditing={submitAIQuestion}
                 returnKeyType="send"
@@ -1272,20 +1386,19 @@ const styles = StyleSheet.create({
     padding: 18,
     maxHeight: '78%',
   },
-  // AI panel floats as a card over the page instead of docking to the bottom edge
+  // AI panel opens as a near-full-height "subpage" sliding up from the bottom
   aiOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.35)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 16,
+    justifyContent: 'flex-end',
   },
   aiCard: {
     backgroundColor: '#fff',
-    borderRadius: 22,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     padding: 18,
     width: '100%',
-    maxHeight: '75%',
+    height: '92%',
     ...Platform.select({
       android: { elevation: 14 },
       ios: { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } },
@@ -1370,8 +1483,10 @@ const styles = StyleSheet.create({
 
   // ---- Homepage (native, Via-style) ----
   homeScreen: { flex: 1, backgroundColor: '#fff', alignItems: 'center', paddingTop: 90, paddingHorizontal: 20 },
+  homeScreenNight: { backgroundColor: '#111' },
   homeLogoWrap: { alignItems: 'center', marginBottom: 32, width: '100%' },
   homeBrand: { fontSize: 18, fontWeight: '700', color: '#333', textAlign: 'center' },
+  homeBrandNight: { color: '#eee' },
   homeSearchRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   homeSearchInput: {
     flex: 1,
@@ -1384,6 +1499,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#111',
   },
+  homeSearchInputNight: { backgroundColor: '#222', borderColor: '#333', color: '#eee' },
   homeGoBtn: {
     marginLeft: 10,
     backgroundColor: '#5B5FEF',
