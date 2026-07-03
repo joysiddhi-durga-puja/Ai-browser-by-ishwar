@@ -44,10 +44,6 @@ Respond with ONLY valid JSON, no markdown, no extra text, in this exact format:
 [{"question":"...","answer":"concise answer"}]
 If no questions are found, respond with exactly: []`,
 
-    wa_reply: `You are drafting a short, casual WhatsApp reply on behalf of the phone's owner (chat: ${pageUrl || 'unknown'}).
-Incoming message(s):
-${trimmedContext || '(no text)'}
-Reply in 1-2 short sentences, matching the language/tone of the incoming message (Hindi/Hinglish/English). Output ONLY the reply text — no quotes, no labels, no explanation.`,
   };
 
   const systemPrompt = prompts[mode] || prompts.ask;

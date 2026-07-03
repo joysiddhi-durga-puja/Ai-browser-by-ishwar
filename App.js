@@ -59,7 +59,6 @@ const DOWNLOADS_KEY = 'downloads_v1';
 const AI_PROVIDER_KEY = 'ai_provider_v1';
 const ADMIN_UNLOCK_KEY = 'ai_admin_unlocked_v1';
 const AUTOFILL_PROFILE_KEY = 'autofill_profile_v1';
-const WA_REPLY_KEY = 'wa_reply_enabled_v1';
 // ⚠️ Change this to your own secret. Only devices that enter this correctly
 // can use the app's shared "Default" backend — everyone else must add their own key.
 const ADMIN_PASSCODE = 'joysiddhi123';
@@ -94,7 +93,6 @@ const MENU_ITEMS_DEF = [
   { key: 'desktop', icon: '🖥️', label: 'Desktop site' },
   { key: 'autofillRun', icon: '📝', label: 'Fill form' },
   { key: 'autofillInfo', icon: '🪪', label: 'My info' },
-  { key: 'waReply', icon: '💬', label: 'WA AI Reply' },
   { key: 'settings', icon: '⚙️', label: 'Settings' },
 ];
 
@@ -139,16 +137,6 @@ function buildMessages(mode, question, pageContext, pageUrl) {
         role: 'user',
         content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nGive a TL;DR summary as 3-5 short bullet points.`,
       },
-    ];
-  }
-  if (mode === 'wa_reply') {
-    return [
-      {
-        role: 'system',
-        content:
-          'You are drafting a short, casual WhatsApp reply on behalf of the phone\'s owner. Match the language/tone (Hindi/Hinglish/English) of the incoming message. Reply in 1-2 short sentences. Output ONLY the reply text — no quotes, no labels, no explanation.',
-      },
-      { role: 'user', content: `Chat: ${pageUrl || 'Unknown'}\n\nIncoming message(s):\n${context}\n\nWrite the reply.` },
     ];
   }
   // ask
@@ -241,14 +229,6 @@ export default function App() {
   });
   const [showAutofillSettings, setShowAutofillSettings] = useState(false);
   const [autofillDraft, setAutofillDraft] = useState(autofillProfile);
-
-  // ---------- WhatsApp Web AI auto-reply (semi-auto: drafts into the box, never auto-sends) ----------
-  const [waReplyEnabled, setWaReplyEnabled] = useState(false);
-  // { [chatName]: { text, ts, applied } } — applied=true once placed into that chat's compose box
-  const [waDraftQueue, setWaDraftQueue] = useState({});
-  const waActiveChatRef = useRef(null);
-  const waPendingTexts = useRef({}); // per-chat buffer of incoming texts, flushed after a short debounce
-  const waDebounceTimers = useRef({});
 
   const webviewRefs = useRef({}); // { [tabId]: WebView ref }
   const viewShotRefs = useRef({}); // { [tabId]: View ref } — for tab preview thumbnails
@@ -380,8 +360,6 @@ export default function App() {
           setAutofillDraft(parsedProfile);
         }
 
-        const storedWaReply = await AsyncStorage.getItem(WA_REPLY_KEY);
-        setWaReplyEnabled(storedWaReply === 'true');
       } catch (e) {
         // ignore corrupt storage
       }
@@ -860,160 +838,6 @@ export default function App() {
     webviewRefs.current[activeTabId]?.injectJavaScript(buildAutofillJS(autofillProfile));
   };
 
-  // ---------- WhatsApp Web AI auto-reply ----------
-  const toggleWaReply = async () => {
-    const next = !waReplyEnabled;
-    setWaReplyEnabled(next);
-    await AsyncStorage.setItem(WA_REPLY_KEY, next ? 'true' : 'false');
-    if (next && activeTab && activeTab.url && activeTab.url.includes('web.whatsapp.com')) {
-      webviewRefs.current[activeTabId]?.injectJavaScript(WA_WATCH_JS);
-      Alert.alert('WhatsApp AI Reply: ON', 'AI will draft replies into the message box — you still tap Send yourself.');
-    } else if (!next) {
-      Alert.alert('WhatsApp AI Reply: OFF', 'AI will no longer draft replies.');
-    }
-  };
-
-  // Injected once into the WhatsApp Web tab. Watches the OPEN chat's incoming
-  // bubbles (accurate, full text) and the sidebar's unread badges for chats
-  // that are NOT open (only a preview snippet is available for those, since
-  // WhatsApp doesn't render full message content for chats you haven't opened).
-  // Everything here only READS the page and posts messages back to the app —
-  // it never sends anything by itself.
-  const WA_WATCH_JS = `
-  (function() {
-    if (window.__waWatchInstalled) return true;
-    window.__waWatchInstalled = true;
-
-    function post(type, data) {
-      try { window.ReactNativeWebView.postMessage(JSON.stringify(Object.assign({ type: type }, data || {}))); } catch (e) {}
-    }
-
-    var lastActiveChat = null;
-    setInterval(function() {
-      try {
-        var headerTitle = document.querySelector('#main header span[title]');
-        var name = headerTitle ? headerTitle.getAttribute('title') : null;
-        if (name && name !== lastActiveChat) {
-          lastActiveChat = name;
-          post('WA_ACTIVE_CHAT', { chatName: name });
-        }
-      } catch (e) {}
-    }, 1200);
-
-    function observeMainPanel() {
-      try {
-        var main = document.querySelector('#main');
-        if (!main || main.__aiObserved) return;
-        main.__aiObserved = true;
-        var obs = new MutationObserver(function() {
-          try {
-            var bubbles = main.querySelectorAll('.message-in:not([data-ai-seen])');
-            bubbles.forEach(function(b) {
-              b.setAttribute('data-ai-seen', '1');
-              var textEl = b.querySelector('.selectable-text');
-              var text = textEl ? textEl.innerText : '';
-              if (text && text.trim()) {
-                var headerTitle = document.querySelector('#main header span[title]');
-                var chatName = headerTitle ? headerTitle.getAttribute('title') : (lastActiveChat || 'Unknown');
-                post('WA_NEW_MESSAGE', { chatName: chatName, text: text.trim() });
-              }
-            });
-          } catch (e) {}
-        });
-        obs.observe(main, { childList: true, subtree: true });
-      } catch (e) {}
-    }
-
-    var lastUnread = {};
-    function scanSidebar() {
-      try {
-        var rows = document.querySelectorAll('#pane-side div[role="listitem"]');
-        rows.forEach(function(row) {
-          var nameEl = row.querySelector('span[title]');
-          if (!nameEl) return;
-          var name = nameEl.getAttribute('title');
-          var badge = row.querySelector('span[aria-label$="unread message"], span[aria-label$="unread messages"]');
-          var count = badge ? (parseInt((badge.textContent || '').replace(/[^0-9]/g, ''), 10) || 1) : 0;
-          var prev = lastUnread[name] || 0;
-          if (count > prev && name !== lastActiveChat) {
-            var previewEl = row.querySelector('span[dir="ltr"]') || row.querySelector('span[title]:nth-of-type(2)');
-            var preview = previewEl ? previewEl.innerText : '';
-            post('WA_NEW_MESSAGE', { chatName: name, text: preview || '(new message)' });
-          }
-          lastUnread[name] = count;
-        });
-      } catch (e) {}
-    }
-    setInterval(scanSidebar, 2500);
-
-    var rootObs = new MutationObserver(function() { observeMainPanel(); });
-    rootObs.observe(document.body, { childList: true, subtree: true });
-    observeMainPanel();
-  })();
-  true;
-  `;
-
-  // Places drafted text into the compose box of whichever chat is currently open.
-  // Never presses Send — the user always taps Send themselves.
-  const buildWaFillJS = (text) => {
-    const safe = JSON.stringify(text || '');
-    return `
-    (function() {
-      try {
-        var t = ${safe};
-        var box = document.querySelector('#main [contenteditable="true"][data-tab="10"]') ||
-                  document.querySelector('#main footer [contenteditable="true"]') ||
-                  document.querySelector('[aria-label="Type a message"]');
-        if (!box) { window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'WA_FILL_RESULT', ok: false })); return true; }
-        box.focus();
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, t);
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'WA_FILL_RESULT', ok: true }));
-      } catch (e) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'WA_FILL_RESULT', ok: false, error: String(e) }));
-      }
-    })();
-    true;
-    `;
-  };
-
-  const applyWaDraft = (chatName, text) => {
-    webviewRefs.current[activeTabId]?.injectJavaScript(buildWaFillJS(text));
-    setWaDraftQueue((prev) => ({ ...prev, [chatName]: { ...(prev[chatName] || {}), text, applied: true } }));
-  };
-
-  // Calls the AI to draft a reply for one chat, using whatever provider/model
-  // is currently selected in AI Settings. Silent on failure — a background
-  // draft failing shouldn't interrupt normal browsing.
-  const generateWaReply = async (chatName, incomingTexts) => {
-    if (!waReplyEnabled || aiProvider.mode === 'none') return;
-    const combined = (incomingTexts || []).filter(Boolean).join('\n').slice(0, 3000);
-    if (!combined.trim()) return;
-    const model = aiProvider.model || DEFAULT_MODEL;
-    try {
-      let json;
-      if (aiProvider.mode === 'custom' && aiProvider.apiKey) {
-        json = await callGroqDirect(aiProvider.apiKey, model, 'wa_reply', '', combined, chatName);
-      } else {
-        const res = await fetch(AI_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: 'wa_reply', question: '', pageContext: combined, pageUrl: chatName, model }),
-        });
-        json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'AI error');
-      }
-      const draft = (json.answer || '').trim();
-      if (!draft) return;
-      setWaDraftQueue((prev) => ({ ...prev, [chatName]: { text: draft, ts: Date.now(), applied: false } }));
-      if (chatName === waActiveChatRef.current) {
-        applyWaDraft(chatName, draft);
-      }
-    } catch (e) {
-      // ignore — background draft, no need to alert the user
-    }
-  };
-
   const submitAdminPasscode = async () => {
     if (adminPasscodeInput.trim() === ADMIN_PASSCODE) {
       await AsyncStorage.setItem(ADMIN_UNLOCK_KEY, 'true');
@@ -1086,29 +910,6 @@ export default function App() {
           Alert.alert('Autofill ✅', `Filled ${data.count} field${data.count > 1 ? 's' : ''} (name/email/phone/address only).`);
         } else {
           Alert.alert('Nothing to fill', 'No matching name/email/phone/address fields found on this page — or they were already filled.');
-        }
-      }
-      if (data.type === 'WA_NEW_MESSAGE' && waReplyEnabled) {
-        const { chatName, text } = data;
-        if (chatName && text) {
-          const arr = waPendingTexts.current[chatName] || [];
-          arr.push(text);
-          waPendingTexts.current[chatName] = arr;
-          if (waDebounceTimers.current[chatName]) clearTimeout(waDebounceTimers.current[chatName]);
-          // Wait a few seconds in case more messages land from the same chat,
-          // so we reply once to the whole burst instead of overwriting the box repeatedly.
-          waDebounceTimers.current[chatName] = setTimeout(() => {
-            const texts = waPendingTexts.current[chatName] || [];
-            waPendingTexts.current[chatName] = [];
-            generateWaReply(chatName, texts);
-          }, 3500);
-        }
-      }
-      if (data.type === 'WA_ACTIVE_CHAT') {
-        waActiveChatRef.current = data.chatName;
-        const pending = waDraftQueue[data.chatName];
-        if (pending && !pending.applied) {
-          applyWaDraft(data.chatName, pending.text);
         }
       }
     } catch (e) {
@@ -1312,14 +1113,6 @@ export default function App() {
                     </View>
 
                     <View style={styles.homeCenterWrap}>
-                      <View style={styles.homeLogoWrap}>
-                        <Image
-                          source={require('./assets/logo.png')}
-                          style={styles.homeLogoImg}
-                          resizeMode="contain"
-                        />
-                      </View>
-
                       <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
                         <TextInput
                           style={[styles.homeSearchInputInner, nightMode && { color: '#fff' }]}
@@ -1378,10 +1171,6 @@ export default function App() {
                   }
                   // Re-arm the TL;DR scroll watcher for the fresh page.
                   webviewRefs.current[tab.id]?.injectJavaScript(TLDR_WATCH_JS);
-                  // WhatsApp Web AI auto-reply — only installs if the toggle is on.
-                  if (waReplyEnabled && (t?.url || '').includes('web.whatsapp.com')) {
-                    webviewRefs.current[tab.id]?.injectJavaScript(WA_WATCH_JS);
-                  }
                 }}
                 onNavigationStateChange={(navState) => {
                   updateTab(tab.id, {
@@ -1427,18 +1216,6 @@ export default function App() {
           <Text style={styles.tldrChipText}>⚡ TL;DR</Text>
         </TouchableOpacity>
       )}
-
-      {/* WhatsApp AI draft badge — shows how many chats have a reply drafted and
-          waiting (open that chat to see it auto-fill into the message box). */}
-      {waReplyEnabled && (activeTab?.url || '').includes('web.whatsapp.com') &&
-        Object.values(waDraftQueue).filter((d) => !d.applied).length > 0 && (
-          <View style={styles.tldrChip} pointerEvents="none">
-            <Text style={styles.tldrChipText}>
-              🤖 {Object.values(waDraftQueue).filter((d) => !d.applied).length} AI draft
-              {Object.values(waDraftQueue).filter((d) => !d.applied).length > 1 ? 's' : ''} ready
-            </Text>
-          </View>
-        )}
 
       {/* Bottom toolbar — clean 5-icon layout: Back / Forward / Home / Tabs / Menu */}
       <View style={styles.toolbarWrap}>
@@ -1502,7 +1279,6 @@ export default function App() {
                       setAutofillDraft(autofillProfile);
                       setShowAutofillSettings(true);
                     }
-                    else if (item.key === 'waReply') toggleWaReply();
                     else if (item.key === 'settings') {
                       setCustomKeyInput(aiProvider.apiKey || '');
                       setCustomModelInput(aiProvider.model || DEFAULT_MODEL);
@@ -1511,15 +1287,13 @@ export default function App() {
                   }}
                 >
                   <Text style={styles.menuIcon}>
-                    {item.key === 'night' && nightMode ? '☀️' : item.key === 'desktop' && desktopMode ? '📱' : item.key === 'waReply' && waReplyEnabled ? '✅' : item.icon}
+                    {item.key === 'night' && nightMode ? '☀️' : item.key === 'desktop' && desktopMode ? '📱' : item.icon}
                   </Text>
                   <Text style={styles.menuLabel}>
                     {item.key === 'night' && nightMode
                       ? 'Day mode'
                       : item.key === 'desktop' && desktopMode
                       ? 'Mobile site'
-                      : item.key === 'waReply'
-                      ? (waReplyEnabled ? 'WA Reply: ON' : 'WA Reply: OFF')
                       : item.label}
                   </Text>
                 </TouchableOpacity>
@@ -2357,8 +2131,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#111',
   },
-  homeLogoWrap: { alignItems: 'center', marginBottom: 32, width: '100%' },
-  homeLogoImg: { width: 84, height: 84 },
   homeBrand: { fontSize: 18, fontWeight: '700', color: '#333', textAlign: 'center' },
   homeBrandNight: { color: '#eee' },
   homeSearchRow: {
