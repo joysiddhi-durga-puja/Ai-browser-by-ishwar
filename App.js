@@ -7,6 +7,7 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  Image,
   ScrollView,
   Modal,
   ActivityIndicator,
@@ -29,7 +30,8 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as ScreenCapture from 'expo-screen-capture';
-// ⚠️ Needs: expo install expo-clipboard expo-file-system expo-sharing expo-screen-capture
+import { captureRef } from 'react-native-view-shot';
+// ⚠️ Needs: expo install expo-clipboard expo-file-system expo-sharing expo-screen-capture react-native-view-shot
 
 // ⚠️ Point this to your deployed backend (see api/ask.js in this project)
 const AI_ENDPOINT = 'https://ai-browser-by-iswar.vercel.app/api/ask';
@@ -62,6 +64,7 @@ const makeTab = (url = HOME_MARKER, opts = {}) => ({
   canGoForward: false,
   loading: url !== HOME_MARKER,
   isIncognito: !!opts.incognito,
+  thumbnail: null,
 });
 
 // Grid menu items shown when the hamburger (☰) button is tapped — Via-style bottom sheet.
@@ -83,6 +86,7 @@ const MENU_ITEMS_DEF = [
 const AI_MODES = {
   ask: { hint: 'Thinking…' },
   explain: { hint: 'Explaining the page…' },
+  tldr: { hint: 'Summarizing…' },
 };
 
 // Builds the same style of prompt the backend (api/ask.js) uses, so a
@@ -106,6 +110,18 @@ function buildMessages(mode, question, pageContext, pageUrl) {
           'You scan web page text for FAQs, quiz questions, or form questions and answer each one. Respond ONLY with a JSON array like [{"question":"...","answer":"..."}]. No prose, no markdown fences.',
       },
       { role: 'user', content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}` },
+    ];
+  }
+  if (mode === 'tldr') {
+    return [
+      {
+        role: 'system',
+        content: 'You write extremely short TL;DR summaries of long web pages for a mobile reader, as 3-5 crisp bullet points, no preamble.',
+      },
+      {
+        role: 'user',
+        content: `Page URL: ${pageUrl || ''}\n\nPage content:\n${context}\n\nGive a TL;DR summary as 3-5 short bullet points.`,
+      },
     ];
   }
   // ask
@@ -189,7 +205,10 @@ export default function App() {
   const [adminError, setAdminError] = useState(false);
 
   const webviewRefs = useRef({}); // { [tabId]: WebView ref }
+  const viewShotRefs = useRef({}); // { [tabId]: View ref } — for tab preview thumbnails
   const progressAnim = useRef(new Animated.Value(0)).current;
+  // Floating "TL;DR" button — shown once the user scrolls deep into a long article
+  const [showTldrButton, setShowTldrButton] = useState(false);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const isBookmarked = activeTab && bookmarks.some((b) => b.url === activeTab.url);
@@ -390,6 +409,20 @@ export default function App() {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   };
 
+  // Snapshots the currently-mounted tab view for the tab-switcher grid preview.
+  // Safe to call anytime — silently no-ops if the tab isn't mounted or capture fails
+  // (e.g. right after a fresh WebView remount).
+  const captureTabThumbnail = async (id) => {
+    try {
+      const node = viewShotRefs.current[id];
+      if (!node) return;
+      const uri = await captureRef(node, { format: 'jpg', quality: 0.4, width: 300 });
+      updateTab(id, { thumbnail: uri });
+    } catch (e) {
+      // ignore — thumbnail just stays blank/placeholder
+    }
+  };
+
   const addTab = (url = HOME_MARKER, opts = {}) => {
     const newTab = makeTab(url, opts);
     setTabs((prev) => [...prev, newTab]);
@@ -415,10 +448,14 @@ export default function App() {
       return filtered;
     });
     delete webviewRefs.current[id];
+    delete viewShotRefs.current[id];
   };
 
   const switchTab = (id) => {
+    // Snapshot the tab we're leaving so its grid preview stays fresh.
+    if (activeTabId !== id) captureTabThumbnail(activeTabId);
     setActiveTabId(id);
+    setShowTldrButton(false);
     const tab = tabs.find((t) => t.id === id);
     if (tab) setUrlInput(tab.url === HOME_MARKER ? '' : tab.url);
     setShowTabSwitcher(false);
@@ -691,6 +728,33 @@ export default function App() {
 
   const [pendingAIAction, setPendingAIAction] = useState(null); // { mode, question } or null
 
+  // Watches scroll depth + document length. Once the reader is clearly deep into a
+  // long article (>25% scrolled, page taller than ~2.2 screens) it fires ONE message
+  // so we can surface a floating "TL;DR" button — cheap, no polling from the RN side.
+  const TLDR_WATCH_JS = `
+    (function() {
+      if (window.__tldrWatchInstalled) return true;
+      window.__tldrWatchInstalled = true;
+      var fired = false;
+      function check() {
+        if (fired) return;
+        var doc = document.documentElement;
+        var scrollHeight = Math.max(doc.scrollHeight || 0, document.body ? document.body.scrollHeight : 0);
+        var winH = window.innerHeight || 0;
+        if (scrollHeight < winH * 2.2) return; // not a "long" page
+        var scrolled = window.scrollY || doc.scrollTop || 0;
+        var pct = scrolled / Math.max(1, scrollHeight - winH);
+        if (pct > 0.25) {
+          fired = true;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'SHOW_TLDR' }));
+        }
+      }
+      window.addEventListener('scroll', check, { passive: true });
+      check();
+    })();
+    true;
+  `;
+
   const handleWebViewMessage = async (event) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
@@ -703,9 +767,25 @@ export default function App() {
         await Clipboard.setStringAsync(data.text || '');
         Alert.alert('Copied ✅', 'Page text copied to clipboard.');
       }
+      if (data.type === 'SHOW_TLDR') {
+        setShowTldrButton(true);
+      }
     } catch (e) {
       // ignore non-JSON messages
     }
+  };
+
+  // Tapping the floating TL;DR button — pulls fresh page text, then asks for a short summary.
+  const runTldr = () => {
+    setShowTldrButton(false);
+    if (!activeTab || activeTab.url === HOME_MARKER) return;
+    setAiMode('tldr');
+    setShowAIPanel(true);
+    setAiAnswer('');
+    setAiError(false);
+    setAiLoading(true);
+    setPendingAIAction({ mode: 'tldr', question: '' });
+    webviewRefs.current[activeTabId]?.injectJavaScript(EXTRACT_TEXT_JS);
   };
 
   // Auto-run mode (currently only 'explain') — extracts the page text first, then asks.
@@ -851,6 +931,8 @@ export default function App() {
           tab.url === HOME_MARKER ? (
             <View
               key={tab.id}
+              ref={(r) => (viewShotRefs.current[tab.id] = r)}
+              collapsable={false}
               style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
             >
               <View style={[styles.homeScreen, nightMode && styles.homeScreenNight]}>
@@ -889,13 +971,11 @@ export default function App() {
 
                     <View style={styles.homeCenterWrap}>
                       <View style={styles.homeLogoWrap}>
-                        <Text
-                          style={[styles.homeBrand, nightMode && styles.homeBrandNight]}
-                          numberOfLines={1}
-                          adjustsFontSizeToFit
-                        >
-                          AI Browser by Ishwar
-                        </Text>
+                        <Image
+                          source={require('./assets/logo.png')}
+                          style={styles.homeLogoImg}
+                          resizeMode="contain"
+                        />
                       </View>
 
                       <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
@@ -922,9 +1002,12 @@ export default function App() {
           ) : (
             <View
               key={tab.id}
+              ref={(r) => (viewShotRefs.current[tab.id] = r)}
+              collapsable={false}
               style={[StyleSheet.absoluteFill, { display: tab.id === activeTabId ? 'flex' : 'none' }]}
             >
               <WebView
+                pullToRefreshEnabled
                 // Keying on desktopMode forces a full remount when the user toggles
                 // Desktop/Mobile site — Android WebView won't reliably re-request the
                 // page with a new User-Agent header otherwise.
@@ -938,7 +1021,10 @@ export default function App() {
                     ? ({ nativeEvent }) => startDownload(nativeEvent.downloadUrl)
                     : undefined
                 }
-                onLoadStart={() => updateTab(tab.id, { loading: true })}
+                onLoadStart={() => {
+                  updateTab(tab.id, { loading: true });
+                  if (tab.id === activeTabId) setShowTldrButton(false);
+                }}
                 onLoadEnd={() => {
                   updateTab(tab.id, { loading: false });
                   const t = tabs.find((x) => x.id === tab.id);
@@ -948,6 +1034,8 @@ export default function App() {
                   if (nightMode && tab.id === activeTabId) {
                     webviewRefs.current[tab.id]?.injectJavaScript(buildNightModeJS(true));
                   }
+                  // Re-arm the TL;DR scroll watcher for the fresh page.
+                  webviewRefs.current[tab.id]?.injectJavaScript(TLDR_WATCH_JS);
                 }}
                 onNavigationStateChange={(navState) => {
                   updateTab(tab.id, {
@@ -987,6 +1075,13 @@ export default function App() {
         <Text style={styles.floatingBtnText}>🔍</Text>
       </Animated.View>
 
+      {/* Floating "TL;DR" chip — appears once the user has scrolled deep into a long article */}
+      {showTldrButton && (
+        <TouchableOpacity style={styles.tldrChip} onPress={runTldr} activeOpacity={0.85}>
+          <Text style={styles.tldrChipText}>⚡ TL;DR</Text>
+        </TouchableOpacity>
+      )}
+
       {/* Bottom toolbar — clean 5-icon layout: Back / Forward / Home / Tabs / Menu */}
       <View style={styles.toolbarWrap}>
         <View style={styles.toolbar}>
@@ -1007,7 +1102,13 @@ export default function App() {
           <TouchableOpacity onPress={goHome} style={styles.toolBtn}>
             <Ionicons name="home-outline" size={24} color="#333" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => setShowTabSwitcher(true)} style={styles.toolBtn}>
+          <TouchableOpacity
+            onPress={async () => {
+              await captureTabThumbnail(activeTabId);
+              setShowTabSwitcher(true);
+            }}
+            style={styles.toolBtn}
+          >
             <View style={styles.tabCountBadge}>
               <Text style={styles.tabCountText}>{tabs.length}</Text>
             </View>
@@ -1108,7 +1209,7 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Tab switcher modal */}
+      {/* Tab switcher modal — grid of live thumbnails, Chrome-style */}
       <Modal visible={showTabSwitcher} animationType="slide" transparent onRequestClose={() => setShowTabSwitcher(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowTabSwitcher(false)}>
           <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
@@ -1116,20 +1217,37 @@ export default function App() {
             <FlatList
               data={tabs}
               keyExtractor={(t) => String(t.id)}
+              numColumns={2}
+              columnWrapperStyle={{ gap: 10 }}
+              contentContainerStyle={{ gap: 10 }}
               renderItem={({ item }) => (
-                <View style={[styles.tabRow, item.id === activeTabId && styles.tabRowActive]}>
-                  <TouchableOpacity style={{ flex: 1 }} onPress={() => switchTab(item.id)}>
-                    <Text numberOfLines={1} style={styles.tabRowText}>
-                      {item.isIncognito ? '🕵️ ' : ''}{item.title || item.url}
-                    </Text>
-                    <Text numberOfLines={1} style={styles.tabRowSubtext}>
-                      {item.isIncognito ? 'Incognito' : item.url}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => closeTab(item.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                    <Text style={styles.closeX}>✕</Text>
-                  </TouchableOpacity>
-                </View>
+                <TouchableOpacity
+                  style={[styles.tabThumbCard, item.id === activeTabId && styles.tabThumbCardActive]}
+                  onPress={() => switchTab(item.id)}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.tabThumbPreview}>
+                    {item.thumbnail ? (
+                      <Image source={{ uri: item.thumbnail }} style={styles.tabThumbImg} resizeMode="cover" />
+                    ) : (
+                      <View style={styles.tabThumbPlaceholder}>
+                        <Text style={styles.tabThumbPlaceholderIcon}>
+                          {item.url === HOME_MARKER ? '🏠' : item.isIncognito ? '🕵️' : '🌐'}
+                        </Text>
+                      </View>
+                    )}
+                    <TouchableOpacity
+                      onPress={() => closeTab(item.id)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      style={styles.tabThumbCloseX}
+                    >
+                      <Text style={styles.closeX}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text numberOfLines={1} style={styles.tabThumbTitle}>
+                    {item.isIncognito ? '🕵️ ' : ''}{item.title || item.url}
+                  </Text>
+                </TouchableOpacity>
               )}
             />
             <TouchableOpacity onPress={() => addTab()} style={styles.newTabBtn}>
@@ -1663,6 +1781,38 @@ const styles = StyleSheet.create({
   closeX: { fontSize: 16, color: '#999', paddingHorizontal: 8 },
   newTabBtn: { marginTop: 10, paddingVertical: 12, alignItems: 'center', backgroundColor: '#5B5FEF', borderRadius: 12 },
   newTabBtnText: { color: '#fff', fontWeight: '600' },
+  tabThumbCard: {
+    flex: 1,
+    maxWidth: '48.5%',
+    backgroundColor: '#F5F5F7',
+    borderRadius: 14,
+    padding: 6,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  tabThumbCardActive: { borderColor: '#5B5FEF' },
+  tabThumbPreview: {
+    width: '100%',
+    aspectRatio: 0.72,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#E4E4EC',
+  },
+  tabThumbImg: { width: '100%', height: '100%' },
+  tabThumbPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  tabThumbPlaceholderIcon: { fontSize: 34 },
+  tabThumbCloseX: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabThumbTitle: { fontSize: 12, color: '#222', marginTop: 6, paddingHorizontal: 2 },
   closeModalBtn: { marginTop: 10, paddingVertical: 10, alignItems: 'center' },
   closeModalBtnText: { color: '#5B5FEF', fontWeight: '600' },
   clearHistoryBtn: { marginTop: 10, paddingVertical: 10, alignItems: 'center', backgroundColor: '#fdecec', borderRadius: 8 },
@@ -1743,6 +1893,7 @@ const styles = StyleSheet.create({
     color: '#111',
   },
   homeLogoWrap: { alignItems: 'center', marginBottom: 32, width: '100%' },
+  homeLogoImg: { width: 84, height: 84 },
   homeBrand: { fontSize: 18, fontWeight: '700', color: '#333', textAlign: 'center' },
   homeBrandNight: { color: '#eee' },
   homeSearchRow: {
@@ -1803,6 +1954,22 @@ const styles = StyleSheet.create({
     zIndex: 999,
   },
   floatingBtnText: { fontSize: 30 },
+  tldrChip: {
+    position: 'absolute',
+    bottom: 90,
+    alignSelf: 'center',
+    backgroundColor: '#222',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 24,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
+    zIndex: 998,
+  },
+  tldrChipText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   floatingMenuOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' },
   floatingMenuCard: {
     position: 'absolute',

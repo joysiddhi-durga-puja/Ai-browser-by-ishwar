@@ -27,6 +27,12 @@ Page text:
 ${trimmedContext || '(no text extracted)'}
 Explain what this page is about in detail, using short headers/bullets, mobile-friendly (avoid long paragraphs).`,
 
+    tldr: `You are a helpful assistant embedded in a mobile browser app.
+The user is reading a long page: ${pageUrl || 'unknown'} and wants a TL;DR.
+Page text:
+${trimmedContext || '(no text extracted)'}
+Reply with ONLY 3-5 short bullet points summarizing the page. No preamble, no headers.`,
+
     find_answers: `You are analyzing a web page's text to find questions and answer them.
 Page text:
 ${trimmedContext || '(no text extracted)'}
