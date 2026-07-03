@@ -28,7 +28,8 @@ import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-// ⚠️ Needs: expo install expo-clipboard expo-file-system expo-sharing
+import * as ScreenCapture from 'expo-screen-capture';
+// ⚠️ Needs: expo install expo-clipboard expo-file-system expo-sharing expo-screen-capture
 
 // ⚠️ Point this to your deployed backend (see api/ask.js in this project)
 const AI_ENDPOINT = 'https://ai-browser-by-iswar.vercel.app/api/ask';
@@ -172,6 +173,11 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [downloads, setDownloads] = useState([]);
   const [showDownloads, setShowDownloads] = useState(false);
+  // Unified "Library" page (Bookmarks / History / Saved pages tabs) — replaces the
+  // three separate bottom-sheet modals with one full-page slide-in view.
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [libraryMounted, setLibraryMounted] = useState(false);
+  const libraryPanelAnim = useRef(new Animated.Value(SCREEN_W)).current;
 
   // ---------- AI provider settings ----------
   const [aiProvider, setAiProvider] = useState({ mode: 'none', apiKey: '' }); // 'default' | 'custom' | 'none'
@@ -187,6 +193,91 @@ export default function App() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
   const isBookmarked = activeTab && bookmarks.some((b) => b.url === activeTab.url);
+
+  const showLibrary = showBookmarks || showHistory || showDownloads;
+  const libraryTab = showBookmarks ? 'bookmarks' : showDownloads ? 'downloads' : 'history';
+  const closeLibrary = () => {
+    setShowBookmarks(false);
+    setShowHistory(false);
+    setShowDownloads(false);
+    setLibrarySearch('');
+  };
+  const switchLibraryTab = (tab) => {
+    setShowBookmarks(tab === 'bookmarks');
+    setShowHistory(tab === 'history');
+    setShowDownloads(tab === 'downloads');
+    setLibrarySearch('');
+  };
+
+  // Smooth slide-in-from-right animation for the Library page (kept mounted a
+  // moment longer on close so the exit animation is visible).
+  useEffect(() => {
+    if (showLibrary) {
+      setLibraryMounted(true);
+      requestAnimationFrame(() => {
+        Animated.timing(libraryPanelAnim, {
+          toValue: 0,
+          duration: 280,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start();
+      });
+    } else if (libraryMounted) {
+      Animated.timing(libraryPanelAnim, {
+        toValue: SCREEN_W,
+        duration: 220,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(() => setLibraryMounted(false));
+    }
+  }, [showLibrary]);
+
+  const formatDateLabel = (ts) => {
+    const d = new Date(ts);
+    const today = new Date();
+    const yest = new Date();
+    yest.setDate(today.getDate() - 1);
+    const sameDay = (a, b) =>
+      a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (sameDay(d, today)) return 'Today';
+    if (sameDay(d, yest)) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: '2-digit' });
+  };
+
+  // Builds a flat [{type:'header'|'item', ...}] list for the active library tab,
+  // grouped by date (History/Downloads) and filtered by the search box.
+  const buildLibraryRows = () => {
+    const q = librarySearch.trim().toLowerCase();
+    const matches = (title, url) =>
+      !q || (title || '').toLowerCase().includes(q) || (url || '').toLowerCase().includes(q);
+
+    if (libraryTab === 'bookmarks') {
+      return bookmarks.filter((b) => matches(b.title, b.url)).map((b, i) => ({ type: 'item', kind: 'bookmarks', key: `b${i}`, data: b }));
+    }
+
+    const source = libraryTab === 'downloads' ? downloads : history;
+    const filtered = source.filter((d) => matches(d.title || d.name, d.url));
+    const rows = [];
+    let lastLabel = null;
+    filtered.forEach((item, i) => {
+      const label = formatDateLabel(item.ts);
+      if (label !== lastLabel) {
+        rows.push({ type: 'header', key: `h${i}`, label });
+        lastLabel = label;
+      }
+      rows.push({ type: 'item', kind: libraryTab, key: `i${i}`, data: item });
+    });
+    return rows;
+  };
+
+  // ---------- Block screenshots/screen-recording while an incognito tab is active ----------
+  useEffect(() => {
+    if (activeTab?.isIncognito) {
+      ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+    } else {
+      ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+    }
+  }, [activeTab?.isIncognito]);
 
   // ---------- Persisted data on boot ----------
   useEffect(() => {
@@ -251,9 +342,7 @@ export default function App() {
       if (showAISettings) { setShowAISettings(false); return true; }
       if (showAIPanel) { setShowAIPanel(false); return true; }
       if (showTabSwitcher) { setShowTabSwitcher(false); return true; }
-      if (showBookmarks) { setShowBookmarks(false); return true; }
-      if (showHistory) { setShowHistory(false); return true; }
-      if (showDownloads) { setShowDownloads(false); return true; }
+      if (showLibrary) { closeLibrary(); return true; }
 
       // On a real webpage with history → go back inside the page
       if (activeTab && activeTab.url !== HOME_MARKER && activeTab.canGoBack) {
@@ -293,9 +382,7 @@ export default function App() {
     showAISettings,
     showAIPanel,
     showTabSwitcher,
-    showBookmarks,
-    showHistory,
-    showDownloads,
+    showLibrary,
   ]);
 
   // ---------- Tab helpers ----------
@@ -704,7 +791,14 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar style="dark" />
-      <View style={{ height: TOP_PADDING, backgroundColor: '#fff' }} />
+      <View style={{ height: TOP_PADDING, backgroundColor: activeTab?.isIncognito ? '#1a1a1a' : '#fff' }} />
+
+      {/* Incognito indicator — always visible while an incognito tab is active */}
+      {activeTab?.isIncognito && (
+        <View style={styles.incognitoBanner}>
+          <Text style={styles.incognitoBannerText}>🕵️ Incognito — screenshots blocked</Text>
+        </View>
+      )}
 
       {/* URL bar — hidden on Homepage, only shown while browsing a real page */}
       {activeTab?.url !== HOME_MARKER && (
@@ -793,31 +887,33 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
 
-                    <View style={styles.homeLogoWrap}>
-                      <Text
-                        style={[styles.homeBrand, nightMode && styles.homeBrandNight]}
-                        numberOfLines={1}
-                        adjustsFontSizeToFit
-                      >
-                        AI Browser by Ishwar
-                      </Text>
-                    </View>
+                    <View style={styles.homeCenterWrap}>
+                      <View style={styles.homeLogoWrap}>
+                        <Text
+                          style={[styles.homeBrand, nightMode && styles.homeBrandNight]}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                        >
+                          AI Browser by Ishwar
+                        </Text>
+                      </View>
 
-                    <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
-                      <TextInput
-                        style={styles.homeSearchInputInner}
-                        value={homeSearchInput}
-                        onChangeText={setHomeSearchInput}
-                        onSubmitEditing={openHomeSearch}
-                        placeholder="Search or type a URL"
-                        placeholderTextColor="#9a9a9a"
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        returnKeyType="go"
-                      />
-                      <TouchableOpacity style={styles.homeGoBtnInner} onPress={openHomeSearch}>
-                        <Text style={styles.homeGoBtnText}>Go</Text>
-                      </TouchableOpacity>
+                      <View style={[styles.homeSearchRow, nightMode && styles.homeSearchInputNight]}>
+                        <TextInput
+                          style={[styles.homeSearchInputInner, nightMode && { color: '#fff' }]}
+                          value={homeSearchInput}
+                          onChangeText={setHomeSearchInput}
+                          onSubmitEditing={openHomeSearch}
+                          placeholder="Search or type a URL"
+                          placeholderTextColor={nightMode ? '#888' : '#9a9a9a'}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          returnKeyType="go"
+                        />
+                        <TouchableOpacity style={styles.homeGoBtnInner} onPress={openHomeSearch}>
+                          <Text style={styles.homeGoBtnText}>Go</Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   </>
                 )}
@@ -1024,10 +1120,10 @@ export default function App() {
                 <View style={[styles.tabRow, item.id === activeTabId && styles.tabRowActive]}>
                   <TouchableOpacity style={{ flex: 1 }} onPress={() => switchTab(item.id)}>
                     <Text numberOfLines={1} style={styles.tabRowText}>
-                      {item.title || item.url}
+                      {item.isIncognito ? '🕵️ ' : ''}{item.title || item.url}
                     </Text>
                     <Text numberOfLines={1} style={styles.tabRowSubtext}>
-                      {item.url}
+                      {item.isIncognito ? 'Incognito' : item.url}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => closeTab(item.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
@@ -1046,117 +1142,129 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Bookmarks modal */}
-      <Modal visible={showBookmarks} animationType="slide" transparent onRequestClose={() => setShowBookmarks(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowBookmarks(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Bookmarks</Text>
-            <FlatList
-              data={bookmarks}
-              keyExtractor={(b, i) => String(i)}
-              renderItem={({ item }) => (
-                <View style={styles.tabRow}>
-                  <TouchableOpacity
-                    style={{ flex: 1 }}
-                    onPress={() => {
-                      setUrlInput(item.url);
-                      updateTab(activeTabId, { url: item.url, loading: true });
-                      setShowBookmarks(false);
-                    }}
-                  >
-                    <Text numberOfLines={1} style={styles.tabRowText}>
-                      {item.title || item.url}
-                    </Text>
-                    <Text numberOfLines={1} style={styles.tabRowSubtext}>
-                      {item.url}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => removeBookmark(item.url)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                    <Text style={styles.closeX}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-              ListEmptyComponent={<Text style={styles.emptyText}>No bookmarks yet — tap ☆ on any page</Text>}
-            />
-            <TouchableOpacity onPress={() => setShowBookmarks(false)} style={styles.closeModalBtn}>
-              <Text style={styles.closeModalBtnText}>Close</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* History modal */}
-      <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => setShowHistory(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowHistory(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
-            <Text style={styles.modalTitle}>History</Text>
-            <FlatList
-              data={history}
-              keyExtractor={(h, i) => String(i) + h.ts}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.tabRow}
-                  onPress={() => {
-                    setUrlInput(item.url);
-                    updateTab(activeTabId, { url: item.url, loading: true });
-                    setShowHistory(false);
-                  }}
-                >
-                  <Text numberOfLines={1} style={styles.tabRowText}>
-                    {item.title || item.url}
-                  </Text>
-                  <Text numberOfLines={1} style={styles.tabRowSubtext}>
-                    {new Date(item.ts).toLocaleString()}
-                  </Text>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={<Text style={styles.emptyText}>No history yet</Text>}
-            />
-            {history.length > 0 && (
-              <TouchableOpacity onPress={clearHistory} style={styles.clearHistoryBtn}>
-                <Text style={styles.clearHistoryText}>Clear History</Text>
+      {/* Library page — Bookmarks / History / Saved pages tabs, full-page slide-in from the right */}
+      {libraryMounted && (
+        <Modal visible={libraryMounted} animationType="none" transparent onRequestClose={closeLibrary}>
+          <Animated.View
+            style={[
+              styles.libraryPage,
+              nightMode && styles.libraryPageNight,
+              { transform: [{ translateX: libraryPanelAnim }] },
+            ]}
+          >
+            <View style={styles.libraryHeaderRow}>
+              <TouchableOpacity onPress={closeLibrary} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="chevron-back" size={26} color={nightMode ? '#eee' : '#333'} />
               </TouchableOpacity>
-            )}
-            <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.closeModalBtn}>
-              <Text style={styles.closeModalBtnText}>Close</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+              <View style={styles.libraryTabsRow}>
+                {[
+                  { key: 'bookmarks', label: 'Bookmarks' },
+                  { key: 'history', label: 'History' },
+                  { key: 'downloads', label: 'Saved pages' },
+                ].map((t) => (
+                  <TouchableOpacity key={t.key} onPress={() => switchLibraryTab(t.key)} style={{ marginLeft: 22 }}>
+                    <Text
+                      style={[
+                        styles.libraryTabText,
+                        libraryTab === t.key && styles.libraryTabTextActive,
+                        nightMode && !(libraryTab === t.key) && { color: '#888' },
+                      ]}
+                    >
+                      {t.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
 
-      {/* Downloads modal */}
-      <Modal visible={showDownloads} animationType="slide" transparent onRequestClose={() => setShowDownloads(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowDownloads(false)}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Downloads</Text>
+            <View style={[styles.librarySearchBar, nightMode && styles.homeSearchInputNight]}>
+              <Ionicons name="search-outline" size={18} color={nightMode ? '#999' : '#888'} />
+              <TextInput
+                style={[styles.librarySearchInput, nightMode && { color: '#fff' }]}
+                value={librarySearch}
+                onChangeText={setLibrarySearch}
+                placeholder="Search"
+                placeholderTextColor={nightMode ? '#888' : '#9a9a9a'}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+
             <FlatList
-              data={downloads}
-              keyExtractor={(d, i) => String(i) + d.ts}
-              renderItem={({ item }) => (
-                <View style={styles.tabRow}>
-                  <TouchableOpacity style={{ flex: 1 }} onPress={() => openDownload(item)}>
-                    <Text numberOfLines={1} style={styles.tabRowText}>
-                      {item.name}
-                    </Text>
-                    <Text numberOfLines={1} style={styles.tabRowSubtext}>
-                      {new Date(item.ts).toLocaleString()}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => deleteDownload(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                    <Text style={styles.closeX}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+              data={buildLibraryRows()}
+              keyExtractor={(row) => row.key}
+              contentContainerStyle={{ paddingBottom: 20 }}
+              renderItem={({ item: row }) => {
+                if (row.type === 'header') {
+                  return (
+                    <Text style={[styles.libraryDateHeader, nightMode && { color: '#888' }]}>{row.label}</Text>
+                  );
+                }
+                const item = row.data;
+                const iconName =
+                  row.kind === 'bookmarks' ? 'star' : row.kind === 'downloads' ? 'document-outline' : 'time-outline';
+                const title = item.title || item.name || item.url;
+                const subtitle = row.kind === 'downloads' || row.kind === 'history' ? item.url : item.url;
+                const onOpen = () => {
+                  if (row.kind === 'downloads') {
+                    openDownload(item);
+                    return;
+                  }
+                  setUrlInput(item.url);
+                  updateTab(activeTabId, { url: item.url, loading: true });
+                  closeLibrary();
+                };
+                const onRemove =
+                  row.kind === 'bookmarks'
+                    ? () => removeBookmark(item.url)
+                    : row.kind === 'downloads'
+                    ? () => deleteDownload(item)
+                    : null;
+                return (
+                  <View style={styles.libraryRow}>
+                    <View style={[styles.libraryRowIcon, nightMode && { backgroundColor: '#222' }]}>
+                      <Ionicons name={iconName} size={16} color={nightMode ? '#aaa' : '#666'} />
+                    </View>
+                    <TouchableOpacity style={{ flex: 1 }} onPress={onOpen}>
+                      <Text numberOfLines={1} style={[styles.tabRowText, nightMode && { color: '#eee' }]}>
+                        {title}
+                      </Text>
+                      <Text numberOfLines={1} style={styles.tabRowSubtext}>
+                        {subtitle}
+                      </Text>
+                    </TouchableOpacity>
+                    {onRemove && (
+                      <TouchableOpacity onPress={onRemove} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                        <Text style={styles.closeX}>✕</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                );
+              }}
               ListEmptyComponent={
-                <Text style={styles.emptyText}>No downloads yet — files you download from a page will show up here</Text>
+                <Text style={styles.emptyText}>
+                  {libraryTab === 'bookmarks'
+                    ? 'No bookmarks yet — tap ☆ on any page'
+                    : libraryTab === 'downloads'
+                    ? 'No downloads yet — files you download from a page will show up here'
+                    : 'No history yet'}
+                </Text>
               }
             />
-            <TouchableOpacity onPress={() => setShowDownloads(false)} style={styles.closeModalBtn}>
-              <Text style={styles.closeModalBtnText}>Close</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+
+            <View style={[styles.libraryBottomBar, nightMode && { borderColor: '#222' }]}>
+              <TouchableOpacity onPress={closeLibrary}>
+                <Text style={[styles.libraryBottomBtnText, nightMode && { color: '#eee' }]}>Close</Text>
+              </TouchableOpacity>
+              {libraryTab === 'history' && history.length > 0 && (
+                <TouchableOpacity onPress={clearHistory}>
+                  <Text style={[styles.libraryBottomBtnText, { color: '#d1453b' }]}>Delete all</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </Animated.View>
+        </Modal>
+      )}
 
       {/* AI subpage — opens full-height from the floating 🔍 button (Explain / Ask AI).
           There's no separate "find answers" mode: the user just types whatever they
@@ -1343,6 +1451,12 @@ export default function App() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#fff' },
+  incognitoBanner: {
+    backgroundColor: '#1a1a1a',
+    paddingVertical: 6,
+    alignItems: 'center',
+  },
+  incognitoBannerText: { color: '#fff', fontSize: 12, fontWeight: '600' },
   urlBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1443,6 +1557,66 @@ const styles = StyleSheet.create({
     padding: 18,
     maxHeight: '78%',
   },
+
+  // ---- Library page (Bookmarks / History / Saved pages) ----
+  libraryPage: {
+    flex: 1,
+    backgroundColor: '#fff',
+    paddingTop: TOP_PADDING + 14,
+  },
+  libraryPageNight: { backgroundColor: '#111' },
+  libraryHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+  libraryTabsRow: { flexDirection: 'row', marginLeft: 10 },
+  libraryTabText: { fontSize: 17, color: '#999', fontWeight: '600' },
+  libraryTabTextActive: { color: '#111' },
+  librarySearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f1f1f3',
+    borderRadius: 24,
+    marginHorizontal: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    marginBottom: 12,
+  },
+  librarySearchInput: { flex: 1, marginLeft: 8, paddingVertical: 10, fontSize: 15, color: '#111' },
+  libraryDateHeader: {
+    fontSize: 13,
+    color: '#999',
+    fontWeight: '600',
+    paddingHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  libraryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  libraryRowIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#f1f1f3',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  libraryBottomBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderColor: '#eee',
+    paddingVertical: 14,
+  },
+  libraryBottomBtnText: { fontSize: 15, fontWeight: '600', color: '#5B5FEF' },
   // AI panel opens as a near-full-height "subpage" sliding up from the bottom
   aiOverlay: {
     flex: 1,
@@ -1549,6 +1723,7 @@ const styles = StyleSheet.create({
     marginBottom: 60,
   },
   homeHeaderTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
+  homeCenterWrap: { flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center' },
   homeUrlBar: {
     flexDirection: 'row',
     alignItems: 'center',
