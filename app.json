@@ -7,7 +7,7 @@
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
     "android": {
-      "package": "com.ishwar.aibrowser",
+      "package": "com.iswar.aibrowser",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#2A1B6B"
@@ -26,7 +26,7 @@
       ]
     },
     "ios": {
-      "bundleIdentifier": "com.ishwar.aibrowser"
+      "bundleIdentifier": "com.iswar.aibrowser"
     }
   }
 }
