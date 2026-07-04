@@ -23,7 +23,7 @@ const layoutStyles = StyleSheet.create({
   webviewCoreLayoutContainerBody: { flex: 1, backgroundColor: '#cbd5e1' },
   webviewFrameStructuralContainer: { flex: 1 },
 
-  floatingAssistantInteractiveActionCircleNode: { position: 'absolute', right: 24, bottom: 80, width: 60, height: 60, justifyContent: 'center', alignItems: 'center', zIndex: 99999 },
+  floatingAssistantInteractiveActionCircleNode: { position: 'absolute', right: 24, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: '#4f46e5', justifyContent: 'center', alignItems: 'center', zIndex: 99999, elevation: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 5 },
   globalFloatingToastContainerBox: { position: 'absolute', bottom: 120, left: SCREEN_WIDTH * 0.15, right: SCREEN_WIDTH * 0.15, backgroundColor: 'rgba(45, 55, 72, 0.94)', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 25, zIndex: 9999999, elevation: 12 },
   globalToastMessageTextLabel: { color: '#ffffff', fontSize: 14, fontWeight: '600', textAlign: 'center' },
 
@@ -111,9 +111,11 @@ const layoutStyles = StyleSheet.create({
   homeNavbarInlineSearchInput: { flex: 1, fontSize: 14, color: '#1e293b', paddingVertical: 0, marginLeft: 10 },
 
   homeScreenCenterContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffffff', paddingHorizontal: 40 },
-  homeScreenLogoImage: { width: 96, height: 96, marginBottom: 28 },
-  homeScreenCenterSearchPill: { width: '100%', height: 50, borderRadius: 25, borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#ffffff' },
-  homeScreenCenterSearchPillNight: { borderColor: '#333333', backgroundColor: '#1e1e1e' },
+  homeScreenCenterSearchPill: { width: '100%', height: 50, borderRadius: 25, borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: 'transparent', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, gap: 10 },
+  homeScreenCenterSearchPillNight: { borderColor: '#3a3a3a' },
+  homeScreenCenterSearchInput: { flex: 1, fontSize: 15, paddingVertical: 0 },
+
+  webviewErrorFallbackContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffffff', paddingHorizontal: 36 },
 
   // --- History & Bookmarks right-side slide-in panel ---
   historyPanelBackdrop: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, flexDirection: 'row', zIndex: 999999 },

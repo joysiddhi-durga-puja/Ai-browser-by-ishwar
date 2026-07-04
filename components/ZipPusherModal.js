@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, ActivityIndicator, Modal } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
@@ -9,6 +9,15 @@ import ViaIcon from '../ViaIcon';
 
 const SKIP_PREFIXES = ['__MACOSX/', '.git/'];
 const shouldSkipEntry = (path) => SKIP_PREFIXES.some(prefix => path.startsWith(prefix) || path.includes(`/${prefix}`));
+
+const TOKEN_HELP_STEPS = [
+  'github.com par login karo',
+  'Top-right profile photo > Settings kholo',
+  'Left menu me sabse niche "Developer settings" pe jao',
+  '"Personal access tokens" > "Tokens (classic)" select karo',
+  '"Generate new token (classic)" pe click karo, naam do',
+  '"repo" checkbox tick karke "Generate token" dabao, phir usse copy kar yahan paste karo'
+];
 
 // Creates or updates one file in a GitHub repo via the Contents API.
 // SMART DIFF: before pushing, compares the local file's base64 content
@@ -54,10 +63,18 @@ async function pushFileToGithub({ token, owner, repoName, branch, path, contentB
 }
 
 export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, showToast }) {
+  const [screen, setScreen] = useState('main'); // 'main' | 'token_settings'
+  const [showTokenHelp, setShowTokenHelp] = useState(false);
+  const [showRepoDropdown, setShowRepoDropdown] = useState(false);
+
   const [ghToken, setGhToken] = useState('');
+  const [tokenDraft, setTokenDraft] = useState('');
   const [repoPath, setRepoPath] = useState('');
   const [branch, setBranch] = useState('main');
   const [commitMessage, setCommitMessage] = useState('Update via AI Browser ZIP Pusher');
+
+  const [repoList, setRepoList] = useState([]);
+  const [reposLoading, setReposLoading] = useState(false);
 
   const [zipInstance, setZipInstance] = useState(null);
   const [selectedFileName, setSelectedFileName] = useState('');
@@ -75,7 +92,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
           AsyncStorage.getItem('@vault_gh_repo'),
           AsyncStorage.getItem('@vault_gh_branch')
         ]);
-        if (t) setGhToken(t);
+        if (t) { setGhToken(t); setTokenDraft(t); fetchRepoList(t); }
         if (r) setRepoPath(r);
         if (b) setBranch(b);
       } catch (e) { /* ignore — fields just stay blank */ }
@@ -87,11 +104,44 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
   const appendLog = (line) => setLogLines(prev => [...prev.slice(-49), line]);
   const closePanel = () => setCurrentModal(null);
 
-  const saveConfig = async () => {
-    await AsyncStorage.setItem('@vault_gh_token', ghToken);
-    await AsyncStorage.setItem('@vault_gh_repo', repoPath);
-    await AsyncStorage.setItem('@vault_gh_branch', branch || 'main');
-    showToast && showToast('GitHub settings saved');
+  const fetchRepoList = async (tok) => {
+    const useToken = (tok || ghToken || '').trim();
+    if (!useToken) { setRepoList([]); return; }
+    setReposLoading(true);
+    try {
+      const resp = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
+        headers: { Authorization: `token ${useToken}`, Accept: 'application/vnd.github+json' }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setRepoList(Array.isArray(data) ? data.map(r => r.full_name) : []);
+      } else {
+        setRepoList([]);
+      }
+    } catch (e) {
+      setRepoList([]);
+    }
+    setReposLoading(false);
+  };
+
+  const saveToken = async () => {
+    const cleanToken = tokenDraft.trim();
+    setGhToken(cleanToken);
+    await AsyncStorage.setItem('@vault_gh_token', cleanToken);
+    showToast && showToast('GitHub token set ho gaya');
+    fetchRepoList(cleanToken);
+    setScreen('main');
+  };
+
+  const selectRepo = async (fullName) => {
+    setRepoPath(fullName);
+    setShowRepoDropdown(false);
+    await AsyncStorage.setItem('@vault_gh_repo', fullName);
+  };
+
+  const saveBranch = async (val) => {
+    setBranch(val);
+    await AsyncStorage.setItem('@vault_gh_branch', val || 'main');
   };
 
   const resetSelection = () => {
@@ -138,10 +188,10 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
   };
 
   const pushPaths = async (paths) => {
-    if (!ghToken.trim()) { appendLog('Add a GitHub token first.'); return; }
+    if (!ghToken.trim()) { appendLog('Pehle gear icon se GitHub token set karo.'); return; }
     const [owner, repoName] = (repoPath || '').split('/').map(s => s.trim());
-    if (!owner || !repoName) { appendLog('Repo must be in owner/repo format.'); return; }
-    if (!zipInstance || paths.length === 0) { appendLog('Nothing to push.'); return; }
+    if (!owner || !repoName) { appendLog('Repository select karo dropdown se.'); return; }
+    if (!zipInstance || paths.length === 0) { appendLog('Push karne ke liye kuch nahi hai.'); return; }
 
     setIsBusy(true);
     setProgress({ done: 0, total: paths.length });
@@ -185,44 +235,124 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
     setIsBusy(false);
   };
 
+  const textColor = isNightMode ? '#ffffff' : '#0f172a';
+  const dimText = isNightMode ? '#94a3b8' : '#64748b';
+  const cardBg = isNightMode ? '#1e1e1e' : '#ffffff';
+  const borderColor = isNightMode ? '#333333' : '#e2e8f0';
+
+  // ---------------- TOKEN SETTINGS SCREEN ----------------
+  if (screen === 'token_settings') {
+    return (
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[layoutStyles.fullscreenSystemOverlayContainerBlock, isNightMode && layoutStyles.nightModeShellBG]}>
+        <View style={[layoutStyles.modalSingleHeaderTitleNavbarElementBlock, isNightMode && layoutStyles.nightComponentPanel, { flexDirection: 'row', alignItems: 'center' }]}>
+          <TouchableOpacity onPress={() => setScreen('main')} style={{ paddingRight: 12 }}>
+            <ViaIcon type="back_chevron" size={22} color={textColor} />
+          </TouchableOpacity>
+          <Text style={[layoutStyles.modalSingleNavbarHeaderHeadlineTitleLabelString, isNightMode && { color: '#ffffff' }]}>GitHub Token Settings</Text>
+        </View>
+
+        <ScrollView style={layoutStyles.settingsMenuInnerOperationalContainerLayoutSectionBlock} keyboardShouldPersistTaps="handled">
+          <View style={layoutStyles.settingsSectionBlockPadded}>
+            <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Personal Access Token</Text>
+            <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Sirf isi device par store hota hai. "repo" scope wala token chahiye.</Text>
+
+            <View style={{ position: 'relative', justifyContent: 'center' }}>
+              <TextInput
+                style={[layoutStyles.settingsApiKeyInputField, { paddingRight: 42 }, isNightMode && { color: '#ffffff', backgroundColor: '#2d2d2d', borderColor: '#444444' }]}
+                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                placeholderTextColor="#94a3b8"
+                value={tokenDraft}
+                onChangeText={setTokenDraft}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+              />
+              <TouchableOpacity
+                onPress={() => setShowTokenHelp(true)}
+                style={{ position: 'absolute', right: 12, top: 22 }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <ViaIcon type="help_circle" size={19} color={dimText} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <TouchableOpacity style={layoutStyles.settingsSaveAiConfigButton} onPress={saveToken}>
+            <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 15 }}>Save Token</Text>
+          </TouchableOpacity>
+        </ScrollView>
+
+        <Modal visible={showTokenHelp} transparent animationType="fade" onRequestClose={() => setShowTokenHelp(false)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', padding: 28 }}>
+            <View style={{ backgroundColor: cardBg, borderRadius: 16, padding: 18, width: '100%', maxWidth: 340 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: textColor }}>Token kaise banaye</Text>
+                <TouchableOpacity onPress={() => setShowTokenHelp(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <ViaIcon type="close" size={20} color={dimText} />
+                </TouchableOpacity>
+              </View>
+              {TOKEN_HELP_STEPS.map((step, idx) => (
+                <View key={idx} style={{ flexDirection: 'row', marginBottom: 8 }}>
+                  <Text style={{ color: '#4f46e5', fontWeight: '800', fontSize: 13, width: 20 }}>{idx + 1}.</Text>
+                  <Text style={{ color: textColor, fontSize: 13, flex: 1, lineHeight: 18 }}>{step}</Text>
+                </View>
+              ))}
+              <TouchableOpacity
+                style={{ marginTop: 6, height: 40, borderRadius: 10, backgroundColor: '#4f46e5', justifyContent: 'center', alignItems: 'center' }}
+                onPress={() => setShowTokenHelp(false)}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Samajh gaya</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ---------------- MAIN ZIP PUSHER SCREEN ----------------
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[layoutStyles.fullscreenSystemOverlayContainerBlock, isNightMode && layoutStyles.nightModeShellBG]}>
-      <View style={[layoutStyles.modalSingleHeaderTitleNavbarElementBlock, isNightMode && layoutStyles.nightComponentPanel, { flexDirection: 'row', alignItems: 'center' }]}>
-        <TouchableOpacity onPress={closePanel} style={{ paddingRight: 12 }}>
-          <ViaIcon type="back_chevron" size={22} color={isNightMode ? '#ffffff' : '#0f172a'} />
+      <View style={[layoutStyles.modalSingleHeaderTitleNavbarElementBlock, isNightMode && layoutStyles.nightComponentPanel, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity onPress={closePanel} style={{ paddingRight: 12 }}>
+            <ViaIcon type="back_chevron" size={22} color={textColor} />
+          </TouchableOpacity>
+          <Text style={[layoutStyles.modalSingleNavbarHeaderHeadlineTitleLabelString, isNightMode && { color: '#ffffff' }]}>ZIP → GitHub Pusher</Text>
+        </View>
+        <TouchableOpacity onPress={() => { setTokenDraft(ghToken); setScreen('token_settings'); }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <ViaIcon type="settings" size={21} color={textColor} />
         </TouchableOpacity>
-        <Text style={[layoutStyles.modalSingleNavbarHeaderHeadlineTitleLabelString, isNightMode && { color: '#ffffff' }]}>ZIP → GitHub Pusher</Text>
       </View>
 
       <ScrollView style={layoutStyles.settingsMenuInnerOperationalContainerLayoutSectionBlock} keyboardShouldPersistTaps="handled">
-        <View style={layoutStyles.settingsSectionBlockPadded}>
-          <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>GitHub Personal Access Token</Text>
-          <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Stored only on this device. Needs "repo" scope from github.com/settings/tokens</Text>
-          <Text style={[layoutStyles.settingsToggleItemSecondarySubDescriptionTextString, { marginTop: 4, fontStyle: 'italic' }]}>Smart diff on — unchanged files are auto-skipped, only new/modified files get pushed.</Text>
-          <TextInput
-            style={[layoutStyles.settingsApiKeyInputField, isNightMode && { color: '#ffffff', backgroundColor: '#2d2d2d', borderColor: '#444444' }]}
-            placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-            placeholderTextColor="#94a3b8"
-            value={ghToken}
-            onChangeText={setGhToken}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-          />
-        </View>
+
+        {!ghToken.trim() && (
+          <View style={[layoutStyles.settingsSectionBlockPadded, { backgroundColor: isNightMode ? '#2d2d2d' : '#fef9c3', borderRadius: 12, paddingHorizontal: 14, marginTop: 10 }]}>
+            <Text style={{ color: isNightMode ? '#facc15' : '#92400e', fontSize: 13, fontWeight: '600' }}>
+              ⚠ Pehle top-right gear icon se GitHub token set karo.
+            </Text>
+          </View>
+        )}
 
         <View style={layoutStyles.settingsSectionBlockPadded}>
           <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Repository</Text>
-          <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Format: owner/repo</Text>
-          <TextInput
-            style={[layoutStyles.settingsApiKeyInputField, isNightMode && { color: '#ffffff', backgroundColor: '#2d2d2d', borderColor: '#444444' }]}
-            placeholder="ishwar/my-project"
-            placeholderTextColor="#94a3b8"
-            value={repoPath}
-            onChangeText={setRepoPath}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
+          <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Us account ka repo select karo jispar push karna hai</Text>
+
+          <TouchableOpacity
+            disabled={!ghToken.trim()}
+            onPress={() => { fetchRepoList(); setShowRepoDropdown(true); }}
+            style={[
+              layoutStyles.settingsApiKeyInputField,
+              { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', opacity: ghToken.trim() ? 1 : 0.5 },
+              isNightMode && { backgroundColor: '#2d2d2d', borderColor: '#444444' }
+            ]}
+          >
+            <Text style={{ color: repoPath ? textColor : '#94a3b8', fontSize: 14 }} numberOfLines={1}>
+              {repoPath || 'Select repository'}
+            </Text>
+            <ViaIcon type="chevron_down" size={16} color={dimText} />
+          </TouchableOpacity>
         </View>
 
         <View style={layoutStyles.settingsSectionBlockPadded}>
@@ -232,32 +362,17 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
             placeholder="main"
             placeholderTextColor="#94a3b8"
             value={branch}
-            onChangeText={setBranch}
+            onChangeText={saveBranch}
             autoCapitalize="none"
             autoCorrect={false}
           />
         </View>
 
-        <View style={layoutStyles.settingsSectionBlockPadded}>
-          <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Commit message</Text>
-          <TextInput
-            style={[layoutStyles.settingsApiKeyInputField, isNightMode && { color: '#ffffff', backgroundColor: '#2d2d2d', borderColor: '#444444' }]}
-            placeholder="Update via AI Browser ZIP Pusher"
-            placeholderTextColor="#94a3b8"
-            value={commitMessage}
-            onChangeText={setCommitMessage}
-          />
-        </View>
-
-        <TouchableOpacity style={layoutStyles.settingsSaveAiConfigButton} onPress={saveConfig}>
-          <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 15 }}>Save GitHub Settings</Text>
-        </TouchableOpacity>
-
-        <View style={[layoutStyles.settingsSectionBlockPadded, { marginTop: 6 }]}>
+        <View style={[layoutStyles.settingsSectionBlockPadded, { marginTop: 4 }]}>
           <TouchableOpacity
-            style={[layoutStyles.settingsSaveAiConfigButton, { backgroundColor: '#0f172a' }]}
+            style={[layoutStyles.settingsSaveAiConfigButton, { backgroundColor: '#0f172a', marginTop: 4, opacity: repoPath ? 1 : 0.5 }]}
             onPress={pickZipFile}
-            disabled={isBusy}
+            disabled={isBusy || !repoPath}
           >
             {isBusy && extractedPaths.length === 0 ? (
               <ActivityIndicator color="#ffffff" />
@@ -267,29 +382,48 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
           </TouchableOpacity>
 
           {!!selectedFileName && (
-            <Text style={[layoutStyles.settingsToggleItemSecondarySubDescriptionTextString, { marginTop: 10 }]}>
-              {selectedFileName} — {extractedPaths.length} file{extractedPaths.length === 1 ? '' : 's'} found
-            </Text>
-          )}
+            <View style={{ marginTop: 14, backgroundColor: isNightMode ? '#1e1e1e' : '#f8fafc', borderRadius: 12, padding: 14, borderWidth: 1, borderColor }}>
+              <Text style={{ color: textColor, fontWeight: '700', fontSize: 13.5 }}>
+                {selectedFileName} — {extractedPaths.length} file{extractedPaths.length === 1 ? '' : 's'} ready
+              </Text>
+              <Text style={{ color: dimText, fontSize: 12.5, marginTop: 4 }}>
+                Push hoga: {repoPath || '—'} ({branch || 'main'})
+              </Text>
+              <ScrollView style={{ maxHeight: 110, marginTop: 8 }}>
+                {extractedPaths.map((p, idx) => (
+                  <Text key={idx} style={{ color: dimText, fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', marginBottom: 2 }}>
+                    • {p}
+                  </Text>
+                ))}
+              </ScrollView>
 
-          {extractedPaths.length > 0 && (
-            <TouchableOpacity
-              style={[layoutStyles.settingsSaveAiConfigButton, { backgroundColor: '#4f46e5', marginTop: 10 }]}
-              onPress={() => pushPaths(extractedPaths)}
-              disabled={isBusy}
-            >
-              {isBusy ? (
-                <ActivityIndicator color="#ffffff" />
-              ) : (
-                <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 15 }}>
-                  🚀 Smart Push {extractedPaths.length} file{extractedPaths.length === 1 ? '' : 's'} to GitHub
-                </Text>
-              )}
-            </TouchableOpacity>
+              <Text style={[layoutStyles.settingsToggleItemSecondarySubDescriptionTextString, { marginTop: 10 }]}>Commit message</Text>
+              <TextInput
+                style={[layoutStyles.settingsApiKeyInputField, { marginTop: 6 }, isNightMode && { color: '#ffffff', backgroundColor: '#2d2d2d', borderColor: '#444444' }]}
+                placeholder="Update via AI Browser ZIP Pusher"
+                placeholderTextColor="#94a3b8"
+                value={commitMessage}
+                onChangeText={setCommitMessage}
+              />
+
+              <TouchableOpacity
+                style={[layoutStyles.settingsSaveAiConfigButton, { backgroundColor: '#4f46e5', marginTop: 14, marginBottom: 0 }]}
+                onPress={() => pushPaths(extractedPaths)}
+                disabled={isBusy}
+              >
+                {isBusy ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 15 }}>
+                    🚀 Push {extractedPaths.length} file{extractedPaths.length === 1 ? '' : 's'} to GitHub
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
           )}
 
           {progress.total > 0 && (
-            <Text style={[layoutStyles.settingsToggleItemSecondarySubDescriptionTextString, { marginTop: 8 }]}>
+            <Text style={[layoutStyles.settingsToggleItemSecondarySubDescriptionTextString, { marginTop: 10 }]}>
               Progress: {progress.done} / {progress.total}
             </Text>
           )}
@@ -317,6 +451,38 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
           </View>
         )}
       </ScrollView>
+
+      <Modal visible={showRepoDropdown} transparent animationType="fade" onRequestClose={() => setShowRepoDropdown(false)}>
+        <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', padding: 28 }} activeOpacity={1} onPress={() => setShowRepoDropdown(false)}>
+          <View style={{ backgroundColor: cardBg, borderRadius: 16, padding: 14, width: '100%', maxWidth: 360, maxHeight: '70%' }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <Text style={{ fontSize: 15, fontWeight: '800', color: textColor }}>Repository chuno</Text>
+              <TouchableOpacity onPress={() => setShowRepoDropdown(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <ViaIcon type="close" size={20} color={dimText} />
+              </TouchableOpacity>
+            </View>
+            {reposLoading ? (
+              <ActivityIndicator color="#4f46e5" style={{ marginVertical: 20 }} />
+            ) : repoList.length === 0 ? (
+              <Text style={{ color: dimText, fontSize: 13, paddingVertical: 16, textAlign: 'center' }}>Koi repo nahi mila. Token check karo.</Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 320 }}>
+                {repoList.map((full_name) => (
+                  <TouchableOpacity
+                    key={full_name}
+                    onPress={() => selectRepo(full_name)}
+                    style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: borderColor }}
+                  >
+                    <Text style={{ color: full_name === repoPath ? '#4f46e5' : textColor, fontWeight: full_name === repoPath ? '700' : '500', fontSize: 14 }}>
+                      {full_name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }

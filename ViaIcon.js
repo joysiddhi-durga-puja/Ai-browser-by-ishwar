@@ -136,6 +136,42 @@ const ViaIcon = ({ type, color = '#475569', size = 24 }) => {
           <Line x1="10" y1="20" x2="10" y2="20.01" />
         </Svg>
       );
+    case 'ai_spark':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path d="M12 3l1.8 4.9L18.5 9.7 13.8 11.5 12 16.4 10.2 11.5 5.5 9.7 10.2 7.9 12 3z" fill={color} />
+          <Path d="M18.5 15l0.8 2.2 2.2 0.8-2.2 0.8-0.8 2.2-0.8-2.2-2.2-0.8 2.2-0.8L18.5 15z" fill={color} />
+        </Svg>
+      );
+    case 'wand':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Path d="M4 20L18 6" />
+          <Path d="M15 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1 1-2z" fill={color} stroke="none" />
+          <Path d="M5 15l0.6 1.4L7 17l-1.4 0.6L5 19l-0.6-1.4L3 17l1.4-0.6L5 15z" fill={color} stroke="none" />
+        </Svg>
+      );
+    case 'help_circle':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Circle cx="12" cy="12" r="10" />
+          <Path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 2-3 4" />
+          <Line x1="12" y1="17" x2="12" y2="17.01" />
+        </Svg>
+      );
+    case 'close':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Line x1="18" y1="6" x2="6" y2="18" />
+          <Line x1="6" y1="6" x2="18" y2="18" />
+        </Svg>
+      );
+    case 'chevron_down':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Path d="M6 9l6 6 6-6" />
+        </Svg>
+      );
     case 'back_chevron':
       return (
         <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">

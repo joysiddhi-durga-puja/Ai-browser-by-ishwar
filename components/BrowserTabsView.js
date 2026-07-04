@@ -6,22 +6,24 @@ import HomeScreen from './HomeScreen';
 import layoutStyles from '../styles';
 import {
   HOME_URL,
-  AD_BLOCK_DOMAINS,
-  AD_BLOCK_INJECTED_JS,
   DESKTOP_VIEWPORT_INJECTED_JS,
   NIGHT_MODE_INJECTED_JS,
   NIGHT_MODE_REMOVE_JS,
+  PAGE_QUESTION_SCAN_JS,
+  YOUTUBE_AD_SKIP_INJECTED_JS,
+  YOUTUBE_SPONSOR_SKIP_INJECTED_JS,
   isLikelyDownloadUrl
 } from '../constants';
 
 // Combines whichever injected scripts are currently active into one payload
-// so both can run together on initial page load.
-const buildInjectedJs = (adBlockOn, nightModeOn, desktopModeOn) => {
-  const scripts = [];
-  if (adBlockOn) scripts.push(AD_BLOCK_INJECTED_JS);
+// so both can run together on initial page load. The two YouTube scripts
+// are always included — both are domain-gated internally and no-op
+// instantly on every site that isn't youtube.com.
+const buildInjectedJs = (nightModeOn, desktopModeOn) => {
+  const scripts = [YOUTUBE_AD_SKIP_INJECTED_JS, YOUTUBE_SPONSOR_SKIP_INJECTED_JS];
   if (nightModeOn) scripts.push(NIGHT_MODE_INJECTED_JS);
   if (desktopModeOn) scripts.push(DESKTOP_VIEWPORT_INJECTED_JS);
-  return scripts.length ? scripts.join('\n') : undefined;
+  return scripts.join('\n');
 };
 
 // --- RUNTIME CANVAS ENGINE ---
@@ -32,7 +34,6 @@ export default function BrowserTabsView({
   activeTabId,
   isNightMode,
   isDesktopMode,
-  isAdBlockOn,
   webViewRefs,
   updateTabState,
   setInputUrl,
@@ -40,7 +41,10 @@ export default function BrowserTabsView({
   commitHistoryNode,
   activateHomeSearch,
   startFileDownload,
-  showTabSwitcher
+  showTabSwitcher,
+  onWebViewMessage,
+  navigateToUrl,
+  showBrowserToast
 }) {
   // Refs to each tab's wrapping frame (not the WebView itself) so we can
   // rasterize whatever is currently on screen into a JPEG thumbnail — this
@@ -106,7 +110,7 @@ export default function BrowserTabsView({
             style={[layoutStyles.webviewFrameStructuralContainer, { display: frameSelectionFlag ? 'flex' : 'none' }]}
           >
             {isThisTabHome ? (
-              <HomeScreen isNightMode={isNightMode} />
+              <HomeScreen isNightMode={isNightMode} navigateToUrl={navigateToUrl} />
             ) : (
               <WebView
                 ref={nativeRefNode => { if (nativeRefNode) webViewRefs.current[runningTabInstance.id] = nativeRefNode; }}
@@ -123,16 +127,6 @@ export default function BrowserTabsView({
                 onFileDownload={({ nativeEvent }) => startFileDownload(nativeEvent.downloadUrl)}
                 onShouldStartLoadWithRequest={(navRequest) => {
                   const targetNavUrl = navRequest.url;
-                  if (isAdBlockOn && AD_BLOCK_DOMAINS.some(adHost => targetNavUrl.includes(adHost))) {
-                    return false;
-                  }
-                  // Ad networks on piracy/adult sites redirect via JS/timers
-                  // right after a tap (navigationType 'other', not 'click').
-                  // Their domains rotate constantly so a hostname list alone
-                  // can't keep up — block the redirect type itself instead.
-                  if (isAdBlockOn && navRequest.navigationType === 'other' && targetNavUrl !== runningTabInstance.url) {
-                    return false;
-                  }
                   // A real file (PDF, APK, image, video, etc) instead of a
                   // web page — hand it to the download manager and keep the
                   // WebView exactly where it currently is, like Chrome does.
@@ -165,14 +159,41 @@ export default function BrowserTabsView({
                     setProgress(0);
                   }
                   commitHistoryNode(syntheticEvent.nativeEvent.title, syntheticEvent.nativeEvent.url, runningTabInstance.isIncognito);
+                  // Scan the freshly loaded page for unanswered questions so
+                  // the Auto Answer button knows whether to show itself.
+                  webViewRefs.current[runningTabInstance.id]?.injectJavaScript(PAGE_QUESTION_SCAN_JS);
+                }}
+                onMessage={(event) => onWebViewMessage && onWebViewMessage(runningTabInstance.id, event)}
+                // Movie/piracy-style download sites route their "Download"
+                // buttons through an ad network first. Because popups are
+                // forced into this same WebView (setSupportMultipleWindows
+                // above), when that ad redirect chain lands on a broken or
+                // untrusted-SSL domain, the WebView fails to load it right
+                // in place of the page the person was actually on. Rather
+                // than show any error screen at all, renderError below is
+                // left blank and this just bounces straight back to
+                // whatever was on screen before the redirect fired, with a
+                // toast as the only sign anything happened.
+                onError={(syntheticEvent) => {
+                  const { nativeEvent } = syntheticEvent;
+                  const desc = String(nativeEvent?.description || '').toLowerCase();
+                  const isUntrustedCert = desc.includes('ssl') || desc.includes('certificate');
+                  const webViewRef = webViewRefs.current[runningTabInstance.id];
+                  if (webViewRef) webViewRef.goBack();
+                  if (frameSelectionFlag) {
+                    showBrowserToast && showBrowserToast(isUntrustedCert ? 'Blocked an unsafe redirect' : "Redirect failed, couldn't load");
+                  }
                 }}
                 onNavigationStateChange={(navigationMetricsState) => {
                   updateTabState(runningTabInstance.id, { canGoBack: navigationMetricsState.canGoBack, canGoForward: navigationMetricsState.canGoForward, url: navigationMetricsState.url });
                   if (frameSelectionFlag) setInputUrl(navigationMetricsState.url);
                 }}
                 onLoadProgress={(computedProgressEvent) => frameSelectionFlag && setProgress(computedProgressEvent.nativeEvent.progress)}
-                injectedJavaScript={buildInjectedJs(isAdBlockOn, isNightMode, isDesktopMode)}
-                injectedJavaScriptBeforeContentLoaded={buildInjectedJs(isAdBlockOn, isNightMode, isDesktopMode)}
+                injectedJavaScript={buildInjectedJs(isNightMode, isDesktopMode)}
+                injectedJavaScriptBeforeContentLoaded={buildInjectedJs(isNightMode, isDesktopMode)}
+                renderError={() => (
+                  <View style={[layoutStyles.webviewErrorFallbackContainer, isNightMode && layoutStyles.nightModeShellBG]} />
+                )}
                 style={isNightMode ? layoutStyles.nightModeWebViewBg : null}
               />
             )}

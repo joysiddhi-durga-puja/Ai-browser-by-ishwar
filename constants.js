@@ -20,30 +20,152 @@ export const AVAILABLE_AI_MODELS = [
 ];
 
 // ============================================================================
-// AD BLOCKER CONFIG
-// Two-layer approach: (1) refuse network requests whose host matches a known
-// ad/tracker domain, (2) inject CSS into every loaded page to hide leftover
-// ad containers that don't come from a blocked domain (e.g. same-origin
-// slots injected by the publisher's own script).
+// YOUTUBE AUTO-SKIP-AD
+// YouTube's in-video ads are a native player overlay, not a normal blockable
+// network request — the video/ad stream itself still has to load. The only
+// real fix inside a WebView is to watch for the player's own "Skip Ad"
+// button and click it the instant it becomes clickable. Domain-gated so this
+// is a no-op (returns immediately) on every non-YouTube page. Guarded by
+// window.__aiYtAdSkipInstalled so re-injecting (night mode toggle, desktop
+// mode reload, etc.) never stacks a second interval.
 // ============================================================================
-export const AD_BLOCK_DOMAINS = [
-  'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
-  'adservice.google.com', 'googletagservices.com', 'googletagmanager.com',
-  'adnxs.com', 'adsrvr.org', 'taboola.com', 'outbrain.com',
-  'popads.net', 'propellerads.com', 'adcolony.com', 'moatads.com',
-  'scorecardresearch.com', 'exoclick.com', 'juicyads.com', 'mgid.com',
-  'criteo.com', 'pubmatic.com', 'rubiconproject.com', 'openx.net',
-  'media.net', 'bidswitch.net', 'yieldmo.com', 'smartadserver.com'
-];
-
-export const AD_BLOCK_INJECTED_JS = `
+export const YOUTUBE_AD_SKIP_INJECTED_JS = `
   (function() {
-    var style = document.createElement('style');
-    style.innerHTML = '[class*="ad-"], [class*="ads-"], [id*="google_ads"], ' +
-      '[id*="ad-slot"], [class*="advert"], iframe[src*="doubleclick"], ' +
-      'iframe[src*="googlesyndication"], .adsbygoogle, ins.adsbygoogle ' +
-      '{ display: none !important; height: 0 !important; }';
-    document.head.appendChild(style);
+    if (window.__aiYtAdSkipInstalled) { true; return; }
+    if (!/(^|\\.)youtube\\.com$/.test(location.hostname)) { true; return; }
+    window.__aiYtAdSkipInstalled = true;
+
+    var SKIP_SELECTORS = [
+      '.ytp-ad-skip-button',
+      '.ytp-ad-skip-button-modern',
+      '.ytp-skip-ad-button',
+      '.ytp-ad-skip-button-container button',
+      'button.ytp-ad-skip-button-modern'
+    ];
+
+    function clickSkipIfPresent() {
+      for (var i = 0; i < SKIP_SELECTORS.length; i++) {
+        var btn = document.querySelector(SKIP_SELECTORS[i]);
+        if (btn) { btn.click(); return; }
+      }
+      // Broader net for when YouTube tweaks its exact class names: any
+      // element whose class or aria-label merely contains "skip" (and looks
+      // like an ad-skip control, not an unrelated "skip" elsewhere on the
+      // page) — restricted to the player container to avoid false hits.
+      var player = document.querySelector('.html5-video-player, #movie_player');
+      if (player) {
+        var loose = player.querySelectorAll('[class*="skip" i], [aria-label*="skip" i]');
+        for (var k = 0; k < loose.length; k++) {
+          if (loose[k].offsetParent !== null) { loose[k].click(); return; }
+        }
+      }
+      // Last resort: plain "Skip Ad" text link anywhere on the page.
+      var candidates = document.querySelectorAll('button, span');
+      for (var j = 0; j < candidates.length; j++) {
+        var text = (candidates[j].innerText || '').trim().toLowerCase();
+        if (text === 'skip ad' || text === 'skip ads') { candidates[j].click(); return; }
+      }
+    }
+
+    setInterval(clickSkipIfPresent, 600);
+  })();
+  true;
+`;
+
+// ============================================================================
+// YOUTUBE SPONSOR-SEGMENT SKIP BUTTON
+// YouTube's own pre/mid-roll ads (handled above) are a different thing from
+// a creator's own in-video sponsor read ("this video is sponsored by...").
+// YouTube has no native skip button for that — it's just part of the video
+// file. This uses the community-run SponsorBlock database (the same public
+// API the SponsorBlock browser extension itself calls): for the video
+// currently playing, it fetches the timestamp ranges people have tagged as
+// sponsor/self-promo/interaction-reminder segments. Unlike the ad-skip
+// script above, this does NOT auto-skip — it shows a small "Skip Sponsor"
+// button in the top-right corner of the player only while playback is
+// inside a tagged segment, and only jumps ahead when the person taps it.
+// The button disappears again the moment playback leaves the segment (by
+// tapping it, or by the person seeking past it themselves). Re-checks the
+// URL every 1.5s to notice YouTube's in-app "change video without a real
+// page reload" navigation and re-fetch segments for the new video.
+// Domain-gated and install-guarded the same way as the ad-skip script.
+// ============================================================================
+export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
+  (function() {
+    if (window.__aiYtSponsorSkipInstalled) { true; return; }
+    if (!/(^|\\.)youtube\\.com$/.test(location.hostname)) { true; return; }
+    window.__aiYtSponsorSkipInstalled = true;
+
+    var currentVideoId = null;
+    var segments = [];
+    var activeSegmentEnd = null;
+    var skipButtonEl = null;
+
+    function getVideoId() {
+      var match = location.href.match(/[?&]v=([^&]+)/);
+      return match ? match[1] : null;
+    }
+
+    function fetchSegments(videoId) {
+      var categories = encodeURIComponent(JSON.stringify(['sponsor', 'selfpromo', 'interaction']));
+      var url = 'https://sponsor.ajay.app/api/skipSegments?videoID=' + encodeURIComponent(videoId) + '&categories=' + categories;
+      fetch(url).then(function(res) {
+        return res.ok ? res.json() : [];
+      }).then(function(data) {
+        segments = (data || []).map(function(item) { return item.segment; });
+      }).catch(function() { segments = []; });
+    }
+
+    function removeSkipButton() {
+      if (skipButtonEl) { skipButtonEl.remove(); skipButtonEl = null; }
+      activeSegmentEnd = null;
+    }
+
+    function checkForVideoChange() {
+      var vid = getVideoId();
+      if (vid && vid !== currentVideoId) {
+        currentVideoId = vid;
+        segments = [];
+        removeSkipButton();
+        fetchSegments(vid);
+      }
+    }
+    setInterval(checkForVideoChange, 1500);
+    checkForVideoChange();
+
+    function showSkipButton(segEnd) {
+      activeSegmentEnd = segEnd;
+      if (skipButtonEl) return;
+      var player = document.querySelector('.html5-video-player, #movie_player');
+      if (!player) return;
+      var btn = document.createElement('button');
+      btn.textContent = 'Skip Sponsor ›';
+      btn.style.cssText = 'position:absolute;top:14px;right:14px;z-index:999999;background:rgba(28,28,28,0.85);color:#ffffff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;';
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var video = document.querySelector('video');
+        if (video && activeSegmentEnd != null) video.currentTime = activeSegmentEnd;
+        removeSkipButton();
+      });
+      player.appendChild(btn);
+      skipButtonEl = btn;
+    }
+
+    setInterval(function() {
+      var video = document.querySelector('video');
+      if (!video || !segments.length) { if (skipButtonEl) removeSkipButton(); return; }
+      var t = video.currentTime;
+      var inSegment = false;
+      for (var i = 0; i < segments.length; i++) {
+        var seg = segments[i];
+        if (t >= seg[0] && t < seg[1] - 0.3) {
+          inSegment = true;
+          showSkipButton(seg[1]);
+          break;
+        }
+      }
+      if (!inSegment && skipButtonEl) removeSkipButton();
+    }, 400);
   })();
   true;
 `;
@@ -94,6 +216,77 @@ export const NIGHT_MODE_REMOVE_JS = `
   (function() {
     var existing = document.getElementById('__ai_browser_night_mode_style__');
     if (existing) existing.remove();
+  })();
+  true;
+`;
+
+// ============================================================================
+// PAGE QUESTION SCAN (powers the "Auto Answer" floating button)
+// Walks every text node looking for lines ending in "?". For each one it
+// checks whether the very next element already has a real chunk of text (or
+// a filled input) right after it — a rough proxy for "this question already
+// has a visible answer nearby".
+//
+// onLoadEnd fires as soon as the base HTML/document load completes — on
+// quiz/form/SPA-style pages the actual question text is often injected by
+// JS a moment *after* that event, so a single scan right at load time can
+// come back blank even though questions show up on screen a second later.
+// To avoid that, the very first call installs a re-usable scan function,
+// runs it immediately, then again at 1s and 2.5s while the page settles,
+// and finally hooks a debounced MutationObserver so any question content
+// that appears later (lazy load, infinite scroll, route change) triggers
+// one more scan instead of leaving the button stuck on its first result.
+// The install-guard means later calls to this same script (e.g. the
+// on-demand re-scan right before an Auto Answer request) just re-run the
+// existing scan instead of stacking duplicate observers.
+// ============================================================================
+export const PAGE_QUESTION_SCAN_JS = `
+  (function() {
+    if (window.__aiPageScanRun) { window.__aiPageScanRun(); true; return; }
+
+    function runScan() {
+      try {
+        var bodyText = (document.body && document.body.innerText) || '';
+        var total = 0, unanswered = 0;
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        var node;
+        while ((node = walker.nextNode())) {
+          var t = (node.textContent || '').trim();
+          if (t.length > 8 && t.length < 300 && t.slice(-1) === '?') {
+            total++;
+            var parentEl = node.parentElement;
+            var nextEl = parentEl ? parentEl.nextElementSibling : null;
+            var nextText = nextEl ? (nextEl.innerText || '').trim() : '';
+            var nextInput = nextEl ? nextEl.querySelector('input, textarea, select') : null;
+            var inputFilled = nextInput && (nextInput.value || '').trim().length > 0;
+            if (nextText.length < 15 && !inputFilled) unanswered++;
+          }
+        }
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'AI_PAGE_SCAN',
+          hasQuestions: total > 0,
+          unansweredCount: unanswered,
+          totalQuestions: total,
+          pageText: bodyText.slice(0, 6000)
+        }));
+      } catch (e) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'AI_PAGE_SCAN', hasQuestions: false, unansweredCount: 0, totalQuestions: 0, pageText: '' }));
+      }
+    }
+
+    window.__aiPageScanRun = runScan;
+    runScan();
+    setTimeout(runScan, 1000);
+    setTimeout(runScan, 2500);
+
+    try {
+      var debounceTimer = null;
+      var observer = new MutationObserver(function() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(runScan, 800);
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch (e) {}
   })();
   true;
 `;

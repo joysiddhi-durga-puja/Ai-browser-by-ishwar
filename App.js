@@ -42,8 +42,9 @@ const ensureAiBrowserFolder = async () => {
 
 const storageLabelFromUri = (uri) => (/\/primary[%:]/.test(uri) ? 'AI Browser (Phone storage)' : 'AI Browser (SD card)');
 
-import { HOME_URL, GROQ_ENDPOINT } from './constants';
+import { HOME_URL, GROQ_ENDPOINT, PAGE_QUESTION_SCAN_JS } from './constants';
 import layoutStyles from './styles';
+import ViaIcon from './ViaIcon';
 
 import TopBar from './components/TopBar';
 import BrowserTabsView from './components/BrowserTabsView';
@@ -85,7 +86,6 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [downloads, setDownloads] = useState([]);
   const [isNightMode, setIsNightMode] = useState(false);
-  const [isAdBlockOn, setIsAdBlockOn] = useState(true);
   const [isIncognito, setIsIncognito] = useState(false);
   const [isDesktopMode, setIsDesktopMode] = useState(false);
 
@@ -94,8 +94,9 @@ export default function App() {
 
   const [showAiPanel, setShowAiPanel] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
-  const [aiResponse, setAiResponse] = useState('');
+  const [aiMessages, setAiMessages] = useState([]);
   const [aiLoading, setAiLoading] = useState(false);
+  const autoAnswerPendingTabId = useRef(null);
 
   // User-configurable AI credentials/model, set from the Settings modal.
   const [aiApiKey, setAiApiKey] = useState('');
@@ -480,15 +481,23 @@ export default function App() {
   };
 
   const executeCloudAiGatewayRequest = async () => {
+    const promptText = aiPrompt.trim();
+    if (!promptText) return;
+
     if (!aiApiKey) {
       setShowAiPanel(true);
-      setAiResponse('No Groq API key set yet. Go to Settings and add your API key first.');
+      setAiMessages(prev => [...prev, { id: `ai-${Date.now()}`, role: 'ai', content: 'Groq API key set nahi hai abhi. Settings me jaake apni API key add karo.' }]);
       return;
     }
+
+    const userMessage = { id: `user-${Date.now()}`, role: 'user', content: promptText };
+    setAiMessages(prev => [...prev, userMessage]);
+    setAiPrompt('');
     setAiLoading(true);
     setShowAiPanel(true);
-    setAiResponse('');
-    const contextualInstructions = `Query: ${aiPrompt}. Context: ${activeTab.url}`;
+
+    const systemInstructions = `You are a helpful assistant embedded in a mobile browser app. Keep answers concise and mobile-friendly. Current page: ${activeTab.url}. If the user's question naturally breaks into multiple short question/answer items (FAQs, quiz-style questions, a list of questions, etc.), respond ONLY as a markdown table with exactly these columns: | Sl No | Question | Answer |. Otherwise answer normally in short plain sentences.`;
+
     try {
       const remoteResponse = await fetch(GROQ_ENDPOINT, {
         method: 'POST',
@@ -496,19 +505,103 @@ export default function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${aiApiKey}`
         },
-        body: JSON.stringify({ model: aiModel, messages: [{ role: "user", content: contextualInstructions }], temperature: 0.4, max_tokens: 1024 })
+        body: JSON.stringify({
+          model: aiModel,
+          messages: [
+            { role: 'system', content: systemInstructions },
+            { role: 'user', content: promptText }
+          ],
+          temperature: 0.4,
+          max_tokens: 1024
+        })
       });
       const unmarshalledJson = await remoteResponse.json();
+      let replyText;
       if (unmarshalledJson?.error) {
-        setAiResponse(`Groq error: ${unmarshalledJson.error.message || 'request failed'}`);
+        replyText = `Groq error: ${unmarshalledJson.error.message || 'request failed'}`;
       } else {
-        setAiResponse(unmarshalledJson?.choices?.[0]?.message?.content || "Empty.");
+        replyText = unmarshalledJson?.choices?.[0]?.message?.content || 'Empty.';
       }
+      setAiMessages(prev => [...prev, { id: `ai-${Date.now()}`, role: 'ai', content: replyText }]);
     } catch (err) {
-      setAiResponse("Connection error.");
+      setAiMessages(prev => [...prev, { id: `ai-${Date.now()}`, role: 'ai', content: 'Connection error aa gaya, dobara try karo.' }]);
     } finally {
       setAiLoading(false);
     }
+  };
+
+  // Fires on every WebView postMessage. The page question scanner
+  // (PAGE_QUESTION_SCAN_JS) is the only sender right now — it runs
+  // automatically after each page load (deciding whether the Auto Answer
+  // button should show) and again on-demand right before an Auto Answer
+  // request goes out (so the AI gets fresh page text).
+  const handleWebViewMessage = (tabId, event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'AI_PAGE_SCAN') {
+        updateTabState(tabId, {
+          hasUnansweredQuestions: !!data.hasQuestions && data.unansweredCount > 0,
+          scannedPageText: data.pageText || ''
+        });
+        if (autoAnswerPendingTabId.current === tabId) {
+          autoAnswerPendingTabId.current = null;
+          runAutoAnswerForTab(tabId, data.pageText || '');
+        }
+      }
+    } catch (e) { /* ignore malformed messages */ }
+  };
+
+  const runAutoAnswerForTab = async (tabId, pageText) => {
+    if (!aiApiKey) { showBrowserToast("Pehle Settings me AI API key set karo"); return; }
+
+    setAiMessages(prev => [...prev, { id: `user-${Date.now()}`, role: 'user', content: 'Auto Answer — is page ke sawalon ke jawab do' }]);
+    setShowAiPanel(true);
+    setAiLoading(true);
+
+    const systemInstructions = `You are analyzing a web page's text to find questions and answer them.\nPage text:\n${pageText || '(no text extracted)'}\nFind any questions present in this text (FAQs, quiz questions, form questions, etc.) and answer each one accurately using the page content.\nRespond with ONLY valid JSON, no markdown, no extra text, in this exact format:\n[{"question":"...","answer":"concise answer"}]\nIf no questions are found, respond with exactly: []`;
+
+    try {
+      const remoteResponse = await fetch(GROQ_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${aiApiKey}`
+        },
+        body: JSON.stringify({
+          model: aiModel,
+          messages: [{ role: 'user', content: systemInstructions }],
+          temperature: 0.3,
+          max_tokens: 1200
+        })
+      });
+      const unmarshalledJson = await remoteResponse.json();
+      const raw = unmarshalledJson?.choices?.[0]?.message?.content || '[]';
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      let items = [];
+      try {
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed)) items = parsed;
+      } catch (e) { items = []; }
+
+      if (items.length === 0) {
+        setAiMessages(prev => [...prev, { id: `ai-${Date.now()}`, role: 'ai', content: 'Is page mein koi clear question nahi mila jiska jawab de saku.' }]);
+      } else {
+        setAiMessages(prev => [...prev, { id: `ai-${Date.now()}`, role: 'ai', qaTable: items }]);
+      }
+    } catch (err) {
+      setAiMessages(prev => [...prev, { id: `ai-${Date.now()}`, role: 'ai', content: 'Connection error aa gaya, dobara try karo.' }]);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  // Re-scans the active page for freshness right before asking the AI,
+  // rather than relying on the scan cached at page-load time.
+  const triggerAutoAnswer = () => {
+    const webViewRef = webViewRefs.current[activeTabId];
+    if (!webViewRef) return;
+    autoAnswerPendingTabId.current = activeTabId;
+    webViewRef.injectJavaScript(PAGE_QUESTION_SCAN_JS);
   };
 
   // --- DYNAMIC CORE NAVIGATION MATRIX BINDINGS ---
@@ -530,18 +623,6 @@ export default function App() {
     { id: 'bookmarks', label: 'Bookmarks', iconType: 'bookmarks', isActive: false, action: () => { setCurrentModal('history_bookmark'); setActiveSubTab('bookmarks'); toggleBottomMenu(false); } },
     { id: 'history', label: 'History', iconType: 'history', isActive: false, action: () => { setCurrentModal('history_bookmark'); setActiveSubTab('history'); toggleBottomMenu(false); } },
     { id: 'downloads', label: 'Downloads', iconType: 'downloads', isActive: false, action: () => { setCurrentModal('downloads'); toggleBottomMenu(false); } },
-    {
-      id: 'adblock',
-      label: 'Ad blocking',
-      iconType: 'adblock',
-      isActive: isAdBlockOn,
-      action: () => {
-        const nextState = !isAdBlockOn;
-        setIsAdBlockOn(nextState);
-        showBrowserToast(nextState ? "Ad blocking is on" : "Ad blocking is off");
-        toggleBottomMenu(false);
-      }
-    },
     {
       id: 'incognito',
       label: 'Incognito',
@@ -578,7 +659,6 @@ export default function App() {
         toggleBottomMenu(false);
       }
     },
-    { id: 'my_info', label: 'My info', iconType: 'my_info', isActive: false, action: () => { Alert.alert("Profile", "Developer active node."); toggleBottomMenu(false); } },
     { id: 'zip_pusher', label: 'ZIP → GitHub', iconType: 'zip_push', isActive: false, action: () => { setCurrentModal('zip_pusher'); toggleBottomMenu(false); } },
     { id: 'settings', label: 'Settings', iconType: 'settings', isActive: false, action: () => { setCurrentModal('settings'); toggleBottomMenu(false); } },
   ];
@@ -612,7 +692,6 @@ export default function App() {
         activeTabId={activeTabId}
         isNightMode={isNightMode}
         isDesktopMode={isDesktopMode}
-        isAdBlockOn={isAdBlockOn}
         webViewRefs={webViewRefs}
         updateTabState={updateTabState}
         setInputUrl={setInputUrl}
@@ -621,6 +700,9 @@ export default function App() {
         activateHomeSearch={activateHomeSearch}
         startFileDownload={startFileDownload}
         showTabSwitcher={showTabSwitcher}
+        onWebViewMessage={handleWebViewMessage}
+        navigateToUrl={navigateToUrl}
+        showBrowserToast={showBrowserToast}
       />
 
       <Toast showToast={showToast} toastMessage={toastMessage} toastFadeAnim={toastFadeAnim} />
@@ -628,7 +710,7 @@ export default function App() {
       {/* --- DYNAMIC ROBOT ANCHOR CONTROLLER --- */}
       {isAiEnabled && !showTabSwitcher && !currentModal && !showAiPanel && (
         <TouchableOpacity style={layoutStyles.floatingAssistantInteractiveActionCircleNode} onPress={() => setShowAiPanel(true)}>
-          <Text style={{ fontSize: 30 }}>📷</Text>
+          <ViaIcon type="ai_spark" size={26} color="#ffffff" />
         </TouchableOpacity>
       )}
 
@@ -714,11 +796,13 @@ export default function App() {
         visible={showAiPanel}
         isNightMode={isNightMode}
         aiLoading={aiLoading}
-        aiResponse={aiResponse}
+        aiMessages={aiMessages}
         aiPrompt={aiPrompt}
         setAiPrompt={setAiPrompt}
         executeCloudAiGatewayRequest={executeCloudAiGatewayRequest}
         setShowAiPanel={setShowAiPanel}
+        showAutoAnswerButton={!!aiApiKey && !isHomeActive && !!activeTab.hasUnansweredQuestions}
+        triggerAutoAnswer={triggerAutoAnswer}
       />
     </SafeAreaView>
   );
