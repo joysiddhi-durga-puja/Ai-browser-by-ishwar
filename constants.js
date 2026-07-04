@@ -40,13 +40,42 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
       '.ytp-ad-skip-button-modern',
       '.ytp-skip-ad-button',
       '.ytp-ad-skip-button-container button',
-      'button.ytp-ad-skip-button-modern'
+      'button.ytp-ad-skip-button-modern',
+      '.ytp-ad-skip-button-slot button',
+      '.ytp-ad-skip-button-slot [role="button"]'
     ];
+
+    // A JS .click() only fires a synthetic "click" event. Real buttons in
+    // YouTube's mobile ad player often react to pointerdown/up or
+    // touchstart/end instead, so a plain .click() can silently do nothing.
+    // Fire a full realistic event sequence to cover every case.
+    function fireFullClick(el) {
+      var rect = el.getBoundingClientRect();
+      var x = rect.left + rect.width / 2;
+      var y = rect.top + rect.height / 2;
+      var opts = { bubbles: true, cancelable: true, clientX: x, clientY: y };
+      ['pointerdown', 'mousedown', 'touchstart', 'pointerup', 'mouseup', 'touchend', 'click'].forEach(function(type) {
+        try {
+          var EventCtor = /^touch/.test(type) ? Event : (window.PointerEvent && /^pointer/.test(type) ? PointerEvent : MouseEvent);
+          el.dispatchEvent(new EventCtor(type, opts));
+        } catch (e) { /* ignore unsupported event types */ }
+      });
+      if (typeof el.click === 'function') el.click();
+    }
+
+    // Given a matched element that merely *contains* the real control
+    // (e.g. a wrapper div), find the actual clickable node inside it.
+    function resolveClickable(el) {
+      if (!el) return null;
+      if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button') return el;
+      var inner = el.querySelector('button, a, [role="button"]');
+      return inner || el;
+    }
 
     function clickSkipIfPresent() {
       for (var i = 0; i < SKIP_SELECTORS.length; i++) {
         var btn = document.querySelector(SKIP_SELECTORS[i]);
-        if (btn) { btn.click(); return; }
+        if (btn && btn.offsetParent !== null) { fireFullClick(resolveClickable(btn)); return; }
       }
       // Broader net for when YouTube tweaks its exact class names: any
       // element whose class or aria-label merely contains "skip" (and looks
@@ -56,18 +85,25 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
       if (player) {
         var loose = player.querySelectorAll('[class*="skip" i], [aria-label*="skip" i]');
         for (var k = 0; k < loose.length; k++) {
-          if (loose[k].offsetParent !== null) { loose[k].click(); return; }
+          if (loose[k].offsetParent !== null) { fireFullClick(resolveClickable(loose[k])); return; }
         }
       }
-      // Last resort: plain "Skip Ad" text link anywhere on the page.
-      var candidates = document.querySelectorAll('button, span');
+      // Last resort: any short "Skip..." text label anywhere on the page
+      // (covers "Skip", "Skip Ad", "Skip Ads", "Skip ►" with an icon glyph
+      // that doesn't show up as text at all).
+      var candidates = document.querySelectorAll('button, [role="button"], span, div');
       for (var j = 0; j < candidates.length; j++) {
         var text = (candidates[j].innerText || '').trim().toLowerCase();
-        if (text === 'skip ad' || text === 'skip ads') { candidates[j].click(); return; }
+        if (text.indexOf('skip') === 0 && text.length < 20 && candidates[j].offsetParent !== null) {
+          fireFullClick(resolveClickable(candidates[j]));
+          return;
+        }
       }
     }
 
-    setInterval(clickSkipIfPresent, 600);
+    setInterval(clickSkipIfPresent, 300);
+    var adObserver = new MutationObserver(clickSkipIfPresent);
+    adObserver.observe(document.body, { childList: true, subtree: true });
   })();
   true;
 `;
@@ -140,13 +176,23 @@ export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
       if (!player) return;
       var btn = document.createElement('button');
       btn.textContent = 'Skip Sponsor ›';
-      btn.style.cssText = 'position:absolute;top:14px;right:14px;z-index:999999;background:rgba(28,28,28,0.85);color:#ffffff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;';
-      btn.addEventListener('click', function(e) {
+      btn.style.cssText = 'position:absolute;top:14px;right:14px;z-index:999999;background:rgba(28,28,28,0.85);color:#ffffff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;transform:translateZ(0);pointer-events:auto;';
+
+      // YouTube's own player toggles its controls on touchstart/touchend,
+      // which fire BEFORE the synthetic "click" event. Stopping propagation
+      // only on "click" is too late - the tap has already reached the
+      // player underneath. Intercept at touchstart/touchend too so the
+      // tap never reaches YouTube's handler in the first place.
+      function skipAction(e) {
         e.stopPropagation();
+        e.preventDefault();
         var video = document.querySelector('video');
         if (video && activeSegmentEnd != null) video.currentTime = activeSegmentEnd;
         removeSkipButton();
-      });
+      }
+      btn.addEventListener('touchstart', function(e) { e.stopPropagation(); }, { passive: false });
+      btn.addEventListener('touchend', skipAction, { passive: false });
+      btn.addEventListener('click', skipAction);
       player.appendChild(btn);
       skipButtonEl = btn;
     }
