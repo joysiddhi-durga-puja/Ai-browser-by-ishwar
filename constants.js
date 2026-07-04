@@ -48,6 +48,24 @@ export const AD_BLOCK_INJECTED_JS = `
   true;
 `;
 
+// Desktop mode swaps the user-agent but the page still renders at phone
+// viewport width — text/columns get clipped like a real desktop site
+// squeezed onto a phone. This forces a proper desktop-width viewport so
+// scalesPageToFit can zoom it out to fit the screen, same as Chrome's
+// "Desktop site" toggle.
+export const DESKTOP_VIEWPORT_INJECTED_JS = `
+  (function() {
+    var meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.name = 'viewport';
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute('content', 'width=1024');
+  })();
+  true;
+`;
+
 // ============================================================================
 // NIGHT MODE CONTENT INJECTION
 // The old approach just set opacity:0.9 on the WebView, which barely changed

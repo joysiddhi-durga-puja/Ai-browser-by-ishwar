@@ -1,12 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Linking } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { captureRef } from 'react-native-view-shot';
 import HomeScreen from './HomeScreen';
 import layoutStyles from '../styles';
 import {
   HOME_URL,
   AD_BLOCK_DOMAINS,
   AD_BLOCK_INJECTED_JS,
+  DESKTOP_VIEWPORT_INJECTED_JS,
   NIGHT_MODE_INJECTED_JS,
   NIGHT_MODE_REMOVE_JS,
   isLikelyDownloadUrl
@@ -14,10 +16,11 @@ import {
 
 // Combines whichever injected scripts are currently active into one payload
 // so both can run together on initial page load.
-const buildInjectedJs = (adBlockOn, nightModeOn) => {
+const buildInjectedJs = (adBlockOn, nightModeOn, desktopModeOn) => {
   const scripts = [];
   if (adBlockOn) scripts.push(AD_BLOCK_INJECTED_JS);
   if (nightModeOn) scripts.push(NIGHT_MODE_INJECTED_JS);
+  if (desktopModeOn) scripts.push(DESKTOP_VIEWPORT_INJECTED_JS);
   return scripts.length ? scripts.join('\n') : undefined;
 };
 
@@ -36,8 +39,26 @@ export default function BrowserTabsView({
   setProgress,
   commitHistoryNode,
   activateHomeSearch,
-  startFileDownload
+  startFileDownload,
+  showTabSwitcher
 }) {
+  // Refs to each tab's wrapping frame (not the WebView itself) so we can
+  // rasterize whatever is currently on screen into a JPEG thumbnail — this
+  // is what powers the Chrome-style live preview cards in the tab switcher.
+  const frameRefs = useRef({});
+
+  // Grab a fresh screenshot of the tab that's currently visible right at
+  // the moment the tab switcher opens, so its card shows the real page
+  // instead of a stale/blank preview. Other tabs keep whatever preview
+  // they last captured the same way.
+  useEffect(() => {
+    if (!showTabSwitcher) return;
+    const targetNode = frameRefs.current[activeTabId];
+    if (!targetNode) return;
+    captureRef(targetNode, { format: 'jpg', quality: 0.5, result: 'tmpfile' })
+      .then(uri => updateTabState(activeTabId, { previewUri: uri }))
+      .catch(() => {});
+  }, [showTabSwitcher]);
   // Night mode is toggled from the menu while pages are already loaded.
   // injectedJavaScript only runs on the initial page load, so without this
   // effect flipping the switch would do nothing until the tab was reloaded.
@@ -78,14 +99,20 @@ export default function BrowserTabsView({
         const frameSelectionFlag = runningTabInstance.id === activeTabId;
         const isThisTabHome = runningTabInstance.url === HOME_URL;
         return (
-          <View key={runningTabInstance.id} style={[layoutStyles.webviewFrameStructuralContainer, { display: frameSelectionFlag ? 'flex' : 'none' }]}>
+          <View
+            key={runningTabInstance.id}
+            ref={node => { if (node) frameRefs.current[runningTabInstance.id] = node; }}
+            collapsable={false}
+            style={[layoutStyles.webviewFrameStructuralContainer, { display: frameSelectionFlag ? 'flex' : 'none' }]}
+          >
             {isThisTabHome ? (
-              <HomeScreen isNightMode={isNightMode} activateHomeSearch={activateHomeSearch} />
+              <HomeScreen isNightMode={isNightMode} />
             ) : (
               <WebView
                 ref={nativeRefNode => { if (nativeRefNode) webViewRefs.current[runningTabInstance.id] = nativeRefNode; }}
                 source={{ uri: runningTabInstance.url }}
                 userAgent={isDesktopMode ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" : undefined}
+                scalesPageToFit={isDesktopMode}
                 // --- Anti external-redirect settings ---
                 // Forces window.open()/target="_blank" popups (the way most
                 // ad networks try to escape into the system browser) to
@@ -97,6 +124,13 @@ export default function BrowserTabsView({
                 onShouldStartLoadWithRequest={(navRequest) => {
                   const targetNavUrl = navRequest.url;
                   if (isAdBlockOn && AD_BLOCK_DOMAINS.some(adHost => targetNavUrl.includes(adHost))) {
+                    return false;
+                  }
+                  // Ad networks on piracy/adult sites redirect via JS/timers
+                  // right after a tap (navigationType 'other', not 'click').
+                  // Their domains rotate constantly so a hostname list alone
+                  // can't keep up — block the redirect type itself instead.
+                  if (isAdBlockOn && navRequest.navigationType === 'other' && targetNavUrl !== runningTabInstance.url) {
                     return false;
                   }
                   // A real file (PDF, APK, image, video, etc) instead of a
@@ -137,8 +171,8 @@ export default function BrowserTabsView({
                   if (frameSelectionFlag) setInputUrl(navigationMetricsState.url);
                 }}
                 onLoadProgress={(computedProgressEvent) => frameSelectionFlag && setProgress(computedProgressEvent.nativeEvent.progress)}
-                injectedJavaScript={buildInjectedJs(isAdBlockOn, isNightMode)}
-                injectedJavaScriptBeforeContentLoaded={buildInjectedJs(isAdBlockOn, isNightMode)}
+                injectedJavaScript={buildInjectedJs(isAdBlockOn, isNightMode, isDesktopMode)}
+                injectedJavaScriptBeforeContentLoaded={buildInjectedJs(isAdBlockOn, isNightMode, isDesktopMode)}
                 style={isNightMode ? layoutStyles.nightModeWebViewBg : null}
               />
             )}

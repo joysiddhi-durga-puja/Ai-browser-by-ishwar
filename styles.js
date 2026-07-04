@@ -12,7 +12,7 @@ const layoutStyles = StyleSheet.create({
   nightComponentPanel: { backgroundColor: '#1e1e1e', borderBottomColor: '#2d2d2d', borderTopColor: '#2d2d2d' },
   nightModeWebViewBg: { backgroundColor: '#121212' },
 
-  navbarContainerPanel: { height: 65, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, backgroundColor: '#ffffff', borderBottomWidth: 1, borderBottomColor: '#e2e8f0', gap: 10, paddingTop: 5 },
+  navbarContainerPanel: { height: 65, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, backgroundColor: '#ffffff', gap: 10, paddingTop: 5 },
   navbarIconButtonAsset: { width: 42, height: 42, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f1f5f9', borderRadius: 21 },
   inputAreaWrapperField: { flex: 1, height: 42, backgroundColor: '#f1f5f9', borderRadius: 21, paddingHorizontal: 16, justifyContent: 'center', position: 'relative', overflow: 'hidden' },
   inputFieldCoreElement: { flex: 1, fontSize: 14, color: '#1e293b', paddingVertical: 0 },
@@ -23,7 +23,7 @@ const layoutStyles = StyleSheet.create({
   webviewCoreLayoutContainerBody: { flex: 1, backgroundColor: '#cbd5e1' },
   webviewFrameStructuralContainer: { flex: 1 },
 
-  floatingAssistantInteractiveActionCircleNode: { position: 'absolute', right: 24, bottom: 80, backgroundColor: '#ffffff', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 8, zIndex: 99999 },
+  floatingAssistantInteractiveActionCircleNode: { position: 'absolute', right: 24, bottom: 80, width: 60, height: 60, justifyContent: 'center', alignItems: 'center', zIndex: 99999 },
   globalFloatingToastContainerBox: { position: 'absolute', bottom: 120, left: SCREEN_WIDTH * 0.15, right: SCREEN_WIDTH * 0.15, backgroundColor: 'rgba(45, 55, 72, 0.94)', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 25, zIndex: 9999999, elevation: 12 },
   globalToastMessageTextLabel: { color: '#ffffff', fontSize: 14, fontWeight: '600', textAlign: 'center' },
 
@@ -31,6 +31,8 @@ const layoutStyles = StyleSheet.create({
   dockEmojiControlLabel: { fontSize: 24, color: '#334155' },
   dockControlAssetDisabledState: { color: '#cbd5e1' },
 
+  menuSheetBackdrop: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, zIndex: 99998, elevation: 23 },
+  menuSheetBackdropTouchable: { flex: 1, backgroundColor: 'transparent' },
   menuSheetStructureAbsoluteWrapper: { backgroundColor: '#ffffff', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingVertical: 20, position: 'absolute', bottom: 56, left: 0, right: 0, elevation: 24, zIndex: 99999, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
   paginatedSlideRenderContainerPage: { paddingHorizontal: 20 },
   symmetricMatrixBalancedFlexGridRow: { flexDirection: 'row', flexWrap: 'wrap', width: '100%', justifyContent: 'space-between' },
@@ -82,6 +84,7 @@ const layoutStyles = StyleSheet.create({
   settingsToggleItemSecondarySubDescriptionTextString: { fontSize: 13, color: '#64748b', marginTop: 3, lineHeight: 17 },
 
   settingsSectionBlockPadded: { paddingVertical: 18, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
+  settingsSectionHeaderTextString: { fontSize: 13, fontWeight: '700', color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 20, marginBottom: 4 },
   settingsApiKeyInputField: { marginTop: 12, height: 46, borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 12, paddingHorizontal: 14, color: '#1e293b', backgroundColor: '#ffffff', fontSize: 14 },
   settingsModelChipRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   settingsModelChipItem: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 18, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0' },
@@ -90,6 +93,8 @@ const layoutStyles = StyleSheet.create({
   settingsModelChipLabelTextActive: { color: '#4f46e5', fontWeight: '700' },
   settingsSaveAiConfigButton: { marginTop: 20, marginBottom: 30, height: 48, borderRadius: 12, backgroundColor: '#4f46e5', justifyContent: 'center', alignItems: 'center' },
 
+  aiEnginePanelBackdrop: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, zIndex: 99999998, elevation: 23 },
+  aiEnginePanelBackdropTouchable: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.35)' },
   aiEngineFloatingPanelBottomSheetResponseContainerBlockBox: { position: 'absolute', bottom: 0, left: 0, right: 0, height: SCREEN_HEIGHT * 0.68, backgroundColor: '#ffffff', borderTopLeftRadius: 28, borderTopRightRadius: 28, elevation: 24, zIndex: 99999999, borderTopWidth: 1, borderTopColor: '#e2e8f0' },
   aiEnginePanelHeaderRowTitleBarActionsLayoutFlexBlock: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 18, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
   aiEngineHeadlineTitleStringLabelText: { fontSize: 16, fontWeight: '800', color: '#1e293b' },

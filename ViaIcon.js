@@ -126,6 +126,16 @@ const ViaIcon = ({ type, color = '#475569', size = 24 }) => {
           <Path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16z" />
         </Svg>
       );
+    case 'zip_push':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8" />
+          <Path d="M1 3h22l-3 5H4z" />
+          <Line x1="10" y1="12" x2="10" y2="12.01" />
+          <Line x1="14" y1="16" x2="14" y2="16.01" />
+          <Line x1="10" y1="20" x2="10" y2="20.01" />
+        </Svg>
+      );
     case 'back_chevron':
       return (
         <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">

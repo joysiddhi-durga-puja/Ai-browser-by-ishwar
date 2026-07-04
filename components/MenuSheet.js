@@ -6,11 +6,18 @@ import layoutStyles, { SCREEN_WIDTH } from '../styles';
 // --- HORIZONTAL SYMMETRIC GRID SHEET ---
 // actionItemsSchema is the full 12-item list built in App.js (it depends on
 // many state setters), split here into two pages of icons.
-export default function MenuSheet({ isMenuVisible, isNightMode, slideAnimation, actionItemsSchema }) {
+// onRequestClose fires when the user taps anywhere outside the sheet.
+export default function MenuSheet({ isMenuVisible, isNightMode, slideAnimation, actionItemsSchema, onRequestClose }) {
   if (!isMenuVisible) return null;
 
-  const primarySlideCollection = actionItemsSchema.slice(0, 8);
-  const secondarySlideCollection = actionItemsSchema.slice(8, 12);
+  // Dynamic pagination: first page holds 8 icons in the symmetric grid,
+  // every following page holds the remainder (wraps naturally as new
+  // action items get added later without needing to touch this file).
+  const ITEMS_PER_PAGE = 8;
+  const pages = [];
+  for (let i = 0; i < actionItemsSchema.length; i += ITEMS_PER_PAGE) {
+    pages.push(actionItemsSchema.slice(i, i + ITEMS_PER_PAGE));
+  }
 
   const renderGridItem = (gridItemNode) => (
     <TouchableOpacity key={gridItemNode.id} style={layoutStyles.interactiveCellGridBlockItem} onPress={gridItemNode.action}>
@@ -32,27 +39,25 @@ export default function MenuSheet({ isMenuVisible, isNightMode, slideAnimation, 
   );
 
   return (
-    <Animated.View style={[layoutStyles.menuSheetStructureAbsoluteWrapper, isNightMode && layoutStyles.nightComponentPanel, { transform: [{ translateY: slideAnimation }] }]}>
-      <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} snapToInterval={SCREEN_WIDTH} decelerationRate="fast">
-        {/* SLIDE 1: Via Clean Minimalist Vector Assets Grid */}
-        <View style={[layoutStyles.paginatedSlideRenderContainerPage, { width: SCREEN_WIDTH }]}>
-          <View style={layoutStyles.symmetricMatrixBalancedFlexGridRow}>
-            {primarySlideCollection.map(renderGridItem)}
-          </View>
-        </View>
+    <View style={layoutStyles.menuSheetBackdrop} pointerEvents="box-none">
+      <TouchableOpacity style={layoutStyles.menuSheetBackdropTouchable} activeOpacity={1} onPress={onRequestClose} />
+      <Animated.View style={[layoutStyles.menuSheetStructureAbsoluteWrapper, isNightMode && layoutStyles.nightComponentPanel, { transform: [{ translateY: slideAnimation }] }]}>
+        <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} snapToInterval={SCREEN_WIDTH} decelerationRate="fast">
+          {pages.map((pageItems, pageIndex) => (
+            <View key={pageIndex} style={[layoutStyles.paginatedSlideRenderContainerPage, { width: SCREEN_WIDTH }]}>
+              <View style={pageIndex === 0 ? layoutStyles.symmetricMatrixBalancedFlexGridRow : layoutStyles.symmetricMatrixBalancedFlexGridRowAlternativeGapLayout}>
+                {pageItems.map(renderGridItem)}
+              </View>
+            </View>
+          ))}
+        </ScrollView>
 
-        {/* SLIDE 2: Remainder Workspace Nodes Expansion */}
-        <View style={[layoutStyles.paginatedSlideRenderContainerPage, { width: SCREEN_WIDTH }]}>
-          <View style={layoutStyles.symmetricMatrixBalancedFlexGridRowAlternativeGapLayout}>
-            {secondarySlideCollection.map(renderGridItem)}
-          </View>
+        <View style={layoutStyles.sliderProgressBulletTrackBarRow}>
+          {pages.map((_, pageIndex) => (
+            <View key={pageIndex} style={pageIndex === 0 ? layoutStyles.bulletNodeIndicatorActive : layoutStyles.bulletNodeIndicatorInactive} />
+          ))}
         </View>
-      </ScrollView>
-
-      <View style={layoutStyles.sliderProgressBulletTrackBarRow}>
-        <View style={layoutStyles.bulletNodeIndicatorActive} />
-        <View style={layoutStyles.bulletNodeIndicatorInactive} />
-      </View>
-    </Animated.View>
+      </Animated.View>
+    </View>
   );
 }

@@ -14,6 +14,33 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ScreenCapture from 'expo-screen-capture';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import { Platform } from 'react-native';
+
+const SAF = FileSystem.StorageAccessFramework;
+const PUBLIC_FOLDER_KEY = 'aiBrowserPublicFolderUri';
+
+// Reads whatever folder the user picked in Settings > Download settings.
+// If none picked yet, prompts once on first download and remembers it.
+const getPublicFolderUri = async () => {
+  const saved = await AsyncStorage.getItem(PUBLIC_FOLDER_KEY);
+  if (saved) return saved;
+  return ensureAiBrowserFolder();
+};
+
+// User only picks the ROOT (internal storage or SD card) — we always
+// create/reuse an "AI Browser" subfolder inside it, so the folder name
+// itself never changes.
+const ensureAiBrowserFolder = async () => {
+  const perm = await SAF.requestDirectoryPermissionsAsync();
+  if (!perm.granted) return null;
+  const existing = await SAF.readDirectoryAsync(perm.directoryUri);
+  const match = existing.find(uri => decodeURIComponent(uri).endsWith('/AI Browser'));
+  const folderUri = match || await SAF.createFileAsync(perm.directoryUri, 'AI Browser', 'vnd.android.document/directory');
+  await AsyncStorage.setItem(PUBLIC_FOLDER_KEY, folderUri);
+  return folderUri;
+};
+
+const storageLabelFromUri = (uri) => (/\/primary[%:]/.test(uri) ? 'AI Browser (Phone storage)' : 'AI Browser (SD card)');
 
 import { HOME_URL, GROQ_ENDPOINT } from './constants';
 import layoutStyles from './styles';
@@ -27,6 +54,7 @@ import TabSwitcherModal from './components/TabSwitcherModal';
 import HistoryBookmarkModal from './components/HistoryBookmarkModal';
 import DownloadsModal from './components/DownloadsModal';
 import SettingsModal from './components/SettingsModal';
+import ZipPusherModal from './components/ZipPusherModal';
 import AiPanel from './components/AiPanel';
 
 // ============================================================================
@@ -74,6 +102,11 @@ export default function App() {
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('');
   const [aiModel, setAiModel] = useState('llama-3.3-70b-versatile');
 
+  // User-chosen public download folder (SD card or internal storage —
+  // whatever the user picks in the system folder dialog).
+  const [downloadFolderUri, setDownloadFolderUri] = useState(null);
+  const [downloadFolderLabel, setDownloadFolderLabel] = useState('Not set — tap to choose');
+
   const slideAnimation = useRef(new Animated.Value(350)).current;
   const toastFadeAnim = useRef(new Animated.Value(0)).current;
   const webViewRefs = useRef({});
@@ -111,6 +144,27 @@ export default function App() {
   }, [showAiPanel, currentModal, showTabSwitcher, isMenuVisible, isHomeSearchActive, activeTabId, tabs]);
 
   useEffect(() => { initializeLocalDatabase(); }, []);
+
+  useEffect(() => {
+    AsyncStorage.getItem(PUBLIC_FOLDER_KEY).then(uri => {
+      if (uri) {
+        setDownloadFolderUri(uri);
+        setDownloadFolderLabel(storageLabelFromUri(uri));
+      }
+    });
+  }, []);
+
+  const chooseDownloadFolder = async () => {
+    if (Platform.OS !== 'android') {
+      showBrowserToast("Folder picker is Android only");
+      return;
+    }
+    const folderUri = await ensureAiBrowserFolder();
+    if (!folderUri) return;
+    setDownloadFolderUri(folderUri);
+    setDownloadFolderLabel(storageLabelFromUri(folderUri));
+    showBrowserToast("Download folder updated");
+  };
 
   // Blocks screenshots/screen-recording while any incognito tab is open.
   useEffect(() => {
@@ -225,6 +279,28 @@ export default function App() {
     }
   };
 
+  // Closes every open tab at once (Chrome/Safari "Close All"), leaving a
+  // single fresh Homepage tab behind so the browser never ends up tab-less.
+  const closeAllTabs = () => {
+    const freshId = Date.now().toString();
+    webViewRefs.current = {};
+    setTabs([{ id: freshId, url: HOME_URL, title: 'Homepage', loading: false, canGoBack: false, canGoForward: false, isIncognito: isIncognito }]);
+    setActiveTabId(freshId);
+    setInputUrl(HOME_URL);
+    setShowTabSwitcher(false);
+  };
+
+  // Moves a tab from one position to another (drag-to-reorder in the tab switcher).
+  const reorderTabs = (fromIndex, toIndex) => {
+    setTabs(prevTabs => {
+      if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= prevTabs.length || toIndex >= prevTabs.length) return prevTabs;
+      const updated = [...prevTabs];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      return updated;
+    });
+  };
+
   // Closes every tab flagged incognito (called when incognito mode is turned off).
   const closeAllIncognitoTabs = () => {
     const remainingTabs = tabs.filter(t => !t.isIncognito);
@@ -331,8 +407,27 @@ export default function App() {
       );
       const result = await downloadResumable.downloadAsync();
       if (!result || !result.uri) throw new Error('empty download result');
+
+      let finalUri = result.uri;
+      if (Platform.OS === 'android') {
+        try {
+          const folderUri = await getPublicFolderUri();
+          if (folderUri) {
+            const mimeType = 'application/octet-stream';
+            const targetFileUri = await SAF.createFileAsync(folderUri, fileName, mimeType);
+            const base64Data = await FileSystem.readAsStringAsync(result.uri, { encoding: FileSystem.EncodingType.Base64 });
+            await FileSystem.writeAsStringAsync(targetFileUri, base64Data, { encoding: FileSystem.EncodingType.Base64 });
+            await FileSystem.deleteAsync(result.uri, { idempotent: true });
+            finalUri = targetFileUri;
+          }
+        } catch {
+          // permission denied / SAF failure — keep the private-sandbox copy
+          // so the download still shows up in the in-app Downloads list.
+        }
+      }
+
       setDownloads(prev => {
-        const next = prev.map(d => (d.id === downloadId ? { ...d, progress: 100, status: 'Completed', localUri: result.uri } : d));
+        const next = prev.map(d => (d.id === downloadId ? { ...d, progress: 100, status: 'Completed', localUri: finalUri } : d));
         persistDownloadsSnapshot(next);
         return next;
       });
@@ -459,6 +554,11 @@ export default function App() {
           closeAllIncognitoTabs();
           showBrowserToast("Incognito closed — all private tabs cleared");
         } else {
+          // Flag the CURRENT tab incognito right away — otherwise
+          // preventScreenCaptureAsync() (App.js effect below) only
+          // fires once a brand-new incognito tab is opened, leaving
+          // screenshots possible right after toggling.
+          updateTabState(activeTabId, { isIncognito: true });
           showBrowserToast("You've gone incognito");
         }
         toggleBottomMenu(false);
@@ -479,6 +579,7 @@ export default function App() {
       }
     },
     { id: 'my_info', label: 'My info', iconType: 'my_info', isActive: false, action: () => { Alert.alert("Profile", "Developer active node."); toggleBottomMenu(false); } },
+    { id: 'zip_pusher', label: 'ZIP → GitHub', iconType: 'zip_push', isActive: false, action: () => { setCurrentModal('zip_pusher'); toggleBottomMenu(false); } },
     { id: 'settings', label: 'Settings', iconType: 'settings', isActive: false, action: () => { setCurrentModal('settings'); toggleBottomMenu(false); } },
   ];
 
@@ -519,6 +620,7 @@ export default function App() {
         commitHistoryNode={commitHistoryNode}
         activateHomeSearch={activateHomeSearch}
         startFileDownload={startFileDownload}
+        showTabSwitcher={showTabSwitcher}
       />
 
       <Toast showToast={showToast} toastMessage={toastMessage} toastFadeAnim={toastFadeAnim} />
@@ -526,7 +628,7 @@ export default function App() {
       {/* --- DYNAMIC ROBOT ANCHOR CONTROLLER --- */}
       {isAiEnabled && !showTabSwitcher && !currentModal && !showAiPanel && (
         <TouchableOpacity style={layoutStyles.floatingAssistantInteractiveActionCircleNode} onPress={() => setShowAiPanel(true)}>
-          <Text style={{ fontSize: 24 }}>🤖</Text>
+          <Text style={{ fontSize: 30 }}>📷</Text>
         </TouchableOpacity>
       )}
 
@@ -547,6 +649,7 @@ export default function App() {
         isNightMode={isNightMode}
         slideAnimation={slideAnimation}
         actionItemsSchema={actionItemsSchema}
+        onRequestClose={() => toggleBottomMenu(false)}
       />
 
       <TabSwitcherModal
@@ -560,6 +663,7 @@ export default function App() {
         setInputUrl={setInputUrl}
         setIsHomeSearchActive={setIsHomeSearchActive}
         setShowTabSwitcher={setShowTabSwitcher}
+        closeAllTabs={closeAllTabs}
       />
 
       <HistoryBookmarkModal
@@ -594,7 +698,16 @@ export default function App() {
         aiModel={aiModel}
         setAiModel={setAiModel}
         persistAiSettings={persistAiSettings}
+        downloadFolderLabel={downloadFolderLabel}
+        chooseDownloadFolder={chooseDownloadFolder}
         setCurrentModal={setCurrentModal}
+      />
+
+      <ZipPusherModal
+        visible={currentModal === 'zip_pusher'}
+        isNightMode={isNightMode}
+        setCurrentModal={setCurrentModal}
+        showToast={showBrowserToast}
       />
 
       <AiPanel
