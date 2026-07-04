@@ -119,6 +119,20 @@ const ViaIcon = ({ type, color = '#475569', size = 24 }) => {
 };
 
 // ============================================================================
+// AI GATEWAY CONFIG
+// The API key is no longer hardcoded. User enters their own Groq API key
+// inside the Settings panel, and it's stored locally on-device via
+// AsyncStorage. Nothing is bundled into the APK.
+// ============================================================================
+const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+const AVAILABLE_AI_MODELS = [
+  { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Versatile)' },
+  { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B (Fast)' },
+  { id: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
+  { id: 'gemma2-9b-it', label: 'Gemma2 9B' }
+];
+
+// ============================================================================
 // COMPONENT MAIN MODULE ENTRY
 // ============================================================================
 export default function App() {
@@ -153,6 +167,11 @@ export default function App() {
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
+
+  // User-configurable AI credentials/model, set from the Settings modal.
+  const [aiApiKey, setAiApiKey] = useState('');
+  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('');
+  const [aiModel, setAiModel] = useState(AVAILABLE_AI_MODELS[0].id);
 
   const slideAnimation = useRef(new Animated.Value(350)).current;
   const toastFadeAnim = useRef(new Animated.Value(0)).current;
@@ -197,12 +216,16 @@ export default function App() {
       const storedDownloads = await AsyncStorage.getItem('@vault_downloads');
       const storedAiConfig = await AsyncStorage.getItem('@vault_ai_enabled');
       const storedTheme = await AsyncStorage.getItem('@vault_night_mode');
+      const storedAiApiKey = await AsyncStorage.getItem('@vault_ai_api_key');
+      const storedAiModel = await AsyncStorage.getItem('@vault_ai_model');
       
       if (storedBookmarks) setBookmarks(JSON.parse(storedBookmarks));
       if (storedHistory) setHistory(JSON.parse(storedHistory));
       if (storedDownloads) setDownloads(JSON.parse(storedDownloads));
       if (storedAiConfig) setIsAiEnabled(JSON.parse(storedAiConfig));
       if (storedTheme) setIsNightMode(JSON.parse(storedTheme));
+      if (storedAiApiKey) { setAiApiKey(storedAiApiKey); setAiApiKeyDraft(storedAiApiKey); }
+      if (storedAiModel) setAiModel(storedAiModel);
     } catch (error) {
       console.warn("Storage exception dynamic baseline handler:", error);
     }
@@ -286,22 +309,40 @@ export default function App() {
     showBrowserToast("History completely purged");
   };
 
-  const executeCloudAiGatewayRequest = async (operationMode) => {
+  const persistAiSettings = async () => {
+    const trimmedKey = aiApiKeyDraft.trim();
+    setAiApiKey(trimmedKey);
+    await AsyncStorage.setItem('@vault_ai_api_key', trimmedKey);
+    await AsyncStorage.setItem('@vault_ai_model', aiModel);
+    showBrowserToast("AI settings saved");
+    setCurrentModal(null);
+  };
+
+  const executeCloudAiGatewayRequest = async () => {
+    if (!aiApiKey) {
+      setShowAiPanel(true);
+      setAiResponse('No Groq API key set yet. Go to Settings and add your API key first.');
+      return;
+    }
     setAiLoading(true);
     setShowAiPanel(true);
     setAiResponse('');
-    let contextualInstructions = operationMode === 'summary' ? `Summary from this web asset: ${activeTab.url}` : `Query: ${aiPrompt}. Context: ${activeTab.url}`;
+    const contextualInstructions = `Query: ${aiPrompt}. Context: ${activeTab.url}`;
     try {
-      const remoteResponse = await fetch('https://api.groq.com/openapi/v1/chat/completions', {
+      const remoteResponse = await fetch(GROQ_ENDPOINT, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer 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`
+          'Authorization': `Bearer ${aiApiKey}`
         },
-        body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "user", content: contextualInstructions }], temperature: 0.4, max_tokens: 1024 })
+        body: JSON.stringify({ model: aiModel, messages: [{ role: "user", content: contextualInstructions }], temperature: 0.4, max_tokens: 1024 })
       });
       const unmarshalledJson = await remoteResponse.json();
-      setAiResponse(unmarshalledJson.choices[0].message.content || "Empty.");
+      if (unmarshalledJson?.error) {
+        setAiResponse(`Groq error: ${unmarshalledJson.error.message || 'request failed'}`);
+      } else {
+        setAiResponse(unmarshalledJson?.choices?.[0]?.message?.content || "Empty.");
+      }
     } catch (err) {
       setAiResponse("Connection error.");
     } finally {
@@ -414,10 +455,16 @@ export default function App() {
                 ref={nativeRefNode => { if (nativeRefNode) webViewRefs.current[runningTabInstance.id] = nativeRefNode; }}
                 source={{ uri: runningTabInstance.url }}
                 userAgent={isDesktopMode ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" : undefined}
-                onLoadStart={() => updateTabState(runningTabInstance.id, { loading: true })}
+                onLoadStart={() => {
+                  updateTabState(runningTabInstance.id, { loading: true });
+                  if (frameSelectionFlag) setProgress(0);
+                }}
                 onLoadEnd={(syntheticEvent) => {
                   updateTabState(runningTabInstance.id, { loading: false, title: syntheticEvent.nativeEvent.title, url: syntheticEvent.nativeEvent.url });
-                  if (frameSelectionFlag) setInputUrl(syntheticEvent.nativeEvent.url);
+                  if (frameSelectionFlag) {
+                    setInputUrl(syntheticEvent.nativeEvent.url);
+                    setProgress(0);
+                  }
                   commitHistoryNode(syntheticEvent.nativeEvent.title, syntheticEvent.nativeEvent.url);
                 }}
                 onNavigationStateChange={(navigationMetricsState) => {
@@ -441,7 +488,7 @@ export default function App() {
 
       {/* --- DYNAMIC ROBOT ANCHOR CONTROLLER --- */}
       {isAiEnabled && !showTabSwitcher && !currentModal && !showAiPanel && (
-        <TouchableOpacity style={layoutStyles.floatingAssistantInteractiveActionCircleNode} onPress={() => executeCloudAiGatewayRequest('summary')}>
+        <TouchableOpacity style={layoutStyles.floatingAssistantInteractiveActionCircleNode} onPress={() => setShowAiPanel(true)}>
           <Text style={{ fontSize: 24 }}>🤖</Text>
         </TouchableOpacity>
       )}
@@ -606,7 +653,7 @@ export default function App() {
             {downloads.map(d => (
               <View key={d.id} style={layoutStyles.dataRowRecordInteractiveListItemLogsBlock}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text style={[layoutStyles.dataRowRecordPrimaryHeadlineTitleLabelText, isNightMode && { color: '#ffffff' }], { flex: 1, marginRight: 8 }} numberOfLines={1}>{d.name}</Text>
+                  <Text style={[layoutStyles.dataRowRecordPrimaryHeadlineTitleLabelText, isNightMode && { color: '#ffffff' }, { flex: 1, marginRight: 8 }]} numberOfLines={1}>{d.name}</Text>
                   <Text style={{ color: '#10b981', fontWeight: '700', fontSize: 13 }}>{d.size}</Text>
                 </View>
                 <Text style={layoutStyles.dataRowRecordSecondaryUrlDescriptionText}>Logs Status: {d.status} • Write Stamp: {d.date}</Text>
@@ -621,11 +668,11 @@ export default function App() {
 
       {/* --- USER SYSTEM CONTROL SETTINGS PANEL --- */}
       {currentModal === 'settings' && (
-        <View style={[layoutStyles.fullscreenSystemOverlayContainerBlock, isNightMode && layoutStyles.nightModeShellBG]}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[layoutStyles.fullscreenSystemOverlayContainerBlock, isNightMode && layoutStyles.nightModeShellBG]}>
           <View style={[layoutStyles.modalSingleHeaderTitleNavbarElementBlock, isNightMode && layoutStyles.nightComponentPanel]}>
             <Text style={[layoutStyles.modalSingleNavbarHeaderHeadlineTitleLabelString, isNightMode && { color: '#ffffff' }]}>Configuration Settings</Text>
           </View>
-          <View style={layoutStyles.settingsMenuInnerOperationalContainerLayoutSectionBlock}>
+          <ScrollView style={layoutStyles.settingsMenuInnerOperationalContainerLayoutSectionBlock}>
             <View style={layoutStyles.settingsPanelInteractiveToggleConfigurationRowItem}>
               <View style={{ flex: 1, marginRight: 16 }}>
                 <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Show AI Floating Portal</Text>
@@ -639,11 +686,58 @@ export default function App() {
                 }}
               />
             </View>
-          </View>
+
+            {/* --- AI API KEY INPUT --- */}
+            <View style={layoutStyles.settingsSectionBlockPadded}>
+              <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Groq API Key</Text>
+              <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Stored only on this device. Get a free key from console.groq.com</Text>
+              <TextInput
+                style={[layoutStyles.settingsApiKeyInputField, isNightMode && { color: '#ffffff', backgroundColor: '#2d2d2d', borderColor: '#444444' }]}
+                placeholder="gsk_xxxxxxxxxxxxxxxxxxxx"
+                placeholderTextColor="#94a3b8"
+                value={aiApiKeyDraft}
+                onChangeText={setAiApiKeyDraft}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+              />
+            </View>
+
+            {/* --- AI MODEL SELECTOR --- */}
+            <View style={layoutStyles.settingsSectionBlockPadded}>
+              <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>AI Model</Text>
+              <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Choose which Groq model powers the assistant</Text>
+              <View style={layoutStyles.settingsModelChipRowWrap}>
+                {AVAILABLE_AI_MODELS.map(modelOption => (
+                  <TouchableOpacity
+                    key={modelOption.id}
+                    style={[
+                      layoutStyles.settingsModelChipItem,
+                      isNightMode && { backgroundColor: '#2d2d2d', borderColor: '#444444' },
+                      aiModel === modelOption.id && layoutStyles.settingsModelChipItemActive
+                    ]}
+                    onPress={() => setAiModel(modelOption.id)}
+                  >
+                    <Text style={[
+                      layoutStyles.settingsModelChipLabelText,
+                      isNightMode && { color: '#cccccc' },
+                      aiModel === modelOption.id && layoutStyles.settingsModelChipLabelTextActive
+                    ]}>
+                      {modelOption.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <TouchableOpacity style={layoutStyles.settingsSaveAiConfigButton} onPress={persistAiSettings}>
+              <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 15 }}>Save AI Settings</Text>
+            </TouchableOpacity>
+          </ScrollView>
           <TouchableOpacity style={layoutStyles.closeFullscreenSystemOverlayBtnFooter} onPress={() => setCurrentModal(null)}>
-            <Text style={layoutStyles.closeSystemFooterBtnLabelString}>Save Settings Parameters</Text>
+            <Text style={layoutStyles.closeSystemFooterBtnLabelString}>Close</Text>
           </TouchableOpacity>
-        </View>
+        </KeyboardAvoidingView>
       )}
 
       {/* --- COGNITIVE CORE LLAMA ASSISTANT BOTTOM SHEET PANEL --- */}
@@ -673,7 +767,7 @@ export default function App() {
               onChangeText={setAiPrompt}
               placeholderTextColor="#94a3b8"
             />
-            <TouchableOpacity style={layoutStyles.aiEngineSubmitPromptInteractiveActionNodeBtnAsset} onPress={() => executeCloudAiGatewayRequest('query')}>
+            <TouchableOpacity style={layoutStyles.aiEngineSubmitPromptInteractiveActionNodeBtnAsset} onPress={() => executeCloudAiGatewayRequest()}>
               <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Execute</Text>
             </TouchableOpacity>
           </View>
@@ -760,6 +854,15 @@ const layoutStyles = StyleSheet.create({
   settingsPanelInteractiveToggleConfigurationRowItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
   settingsToggleItemPrimaryHeadlineLabelTextString: { fontSize: 16, fontWeight: '700', color: '#1e293b' },
   settingsToggleItemSecondarySubDescriptionTextString: { fontSize: 13, color: '#64748b', marginTop: 3, lineHeight: 17 },
+
+  settingsSectionBlockPadded: { paddingVertical: 18, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
+  settingsApiKeyInputField: { marginTop: 12, height: 46, borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 12, paddingHorizontal: 14, color: '#1e293b', backgroundColor: '#ffffff', fontSize: 14 },
+  settingsModelChipRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  settingsModelChipItem: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: 18, backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0' },
+  settingsModelChipItemActive: { backgroundColor: '#eff6ff', borderColor: '#4f46e5' },
+  settingsModelChipLabelText: { fontSize: 12, fontWeight: '600', color: '#64748b' },
+  settingsModelChipLabelTextActive: { color: '#4f46e5', fontWeight: '700' },
+  settingsSaveAiConfigButton: { marginTop: 20, marginBottom: 30, height: 48, borderRadius: 12, backgroundColor: '#4f46e5', justifyContent: 'center', alignItems: 'center' },
 
   aiEngineFloatingPanelBottomSheetResponseContainerBlockBox: { position: 'absolute', bottom: 0, left: 0, right: 0, height: SCREEN_HEIGHT * 0.68, backgroundColor: '#ffffff', borderTopLeftRadius: 28, borderTopRightRadius: 28, elevation: 24, zIndex: 99999999, borderTopWidth: 1, borderTopColor: '#e2e8f0' },
   aiEnginePanelHeaderRowTitleBarActionsLayoutFlexBlock: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 18, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' },
