@@ -151,22 +151,20 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
 `;
 
 // ============================================================================
-// YOUTUBE SPONSOR-SEGMENT SKIP BUTTON
+// YOUTUBE SPONSOR-SEGMENT AUTO-SKIP
 // YouTube's own pre/mid-roll ads (handled above) are a different thing from
 // a creator's own in-video sponsor read ("this video is sponsored by...").
 // YouTube has no native skip button for that — it's just part of the video
 // file. This uses the community-run SponsorBlock database (the same public
 // API the SponsorBlock browser extension itself calls): for the video
 // currently playing, it fetches the timestamp ranges people have tagged as
-// sponsor/self-promo/interaction-reminder segments. Unlike the ad-skip
-// script above, this does NOT auto-skip — it shows a small "Skip Sponsor"
-// button in the top-right corner of the player only while playback is
-// inside a tagged segment, and only jumps ahead when the person taps it.
-// The button disappears again the moment playback leaves the segment (by
-// tapping it, or by the person seeking past it themselves). Re-checks the
-// URL every 1.5s to notice YouTube's in-app "change video without a real
-// page reload" navigation and re-fetch segments for the new video.
-// Domain-gated and install-guarded the same way as the ad-skip script.
+// sponsor/self-promo/interaction-reminder segments, and the moment playback
+// enters one it jumps straight past it automatically — no button, no tap.
+// A toast fires (see onMessage handling) so it's still visible that a
+// segment was skipped. Re-checks the URL every 1.5s to notice YouTube's
+// in-app "change video without a real page reload" navigation and re-fetch
+// segments for the new video. Domain-gated and install-guarded the same way
+// as the ad-skip script.
 // ============================================================================
 export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
   (function() {
@@ -176,8 +174,7 @@ export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
 
     var currentVideoId = null;
     var segments = [];
-    var activeSegmentEnd = null;
-    var skipButtonEl = null;
+    var lastAutoSkippedTo = null;
 
     function getVideoId() {
       var match = location.href.match(/[?&]v=([^&]+)/);
@@ -194,68 +191,35 @@ export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
       }).catch(function() { segments = []; });
     }
 
-    function removeSkipButton() {
-      if (skipButtonEl) { skipButtonEl.remove(); skipButtonEl = null; }
-      activeSegmentEnd = null;
-    }
-
     function checkForVideoChange() {
       var vid = getVideoId();
       if (vid && vid !== currentVideoId) {
         currentVideoId = vid;
         segments = [];
-        removeSkipButton();
+        lastAutoSkippedTo = null;
         fetchSegments(vid);
       }
     }
     setInterval(checkForVideoChange, 1500);
     checkForVideoChange();
 
-    function showSkipButton(segEnd) {
-      activeSegmentEnd = segEnd;
-      if (skipButtonEl) return;
-      var player = document.querySelector('.html5-video-player, #movie_player');
-      if (!player) return;
-      var btn = document.createElement('button');
-      btn.textContent = 'Skip Sponsor ›';
-      btn.style.cssText = 'position:absolute;top:14px;right:14px;z-index:999999;background:rgba(28,28,28,0.85);color:#ffffff;border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;transform:translateZ(0);pointer-events:auto;';
-
-      // YouTube's own player toggles its controls on touchstart/touchend,
-      // which fire BEFORE the synthetic "click" event. Stopping propagation
-      // only on "click" is too late - the tap has already reached the
-      // player underneath. Intercept at touchstart/touchend too so the
-      // tap never reaches YouTube's handler in the first place.
-      function skipAction(e) {
-        e.stopPropagation();
-        e.preventDefault();
-        var video = document.querySelector('video');
-        if (video && activeSegmentEnd != null) video.currentTime = activeSegmentEnd;
-        removeSkipButton();
-        if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'sponsor-segment-skipped' }));
-        }
-      }
-      btn.addEventListener('touchstart', function(e) { e.stopPropagation(); }, { passive: false });
-      btn.addEventListener('touchend', skipAction, { passive: false });
-      btn.addEventListener('click', skipAction);
-      player.appendChild(btn);
-      skipButtonEl = btn;
-    }
-
+    // No button, no tap needed — as soon as playback enters a known
+    // sponsor/selfpromo/interaction segment, jump straight past it.
     setInterval(function() {
       var video = document.querySelector('video');
-      if (!video || !segments.length) { if (skipButtonEl) removeSkipButton(); return; }
+      if (!video || !segments.length) return;
       var t = video.currentTime;
-      var inSegment = false;
       for (var i = 0; i < segments.length; i++) {
         var seg = segments[i];
-        if (t >= seg[0] && t < seg[1] - 0.3) {
-          inSegment = true;
-          showSkipButton(seg[1]);
+        if (t >= seg[0] && t < seg[1] - 0.3 && lastAutoSkippedTo !== seg[1]) {
+          video.currentTime = seg[1];
+          lastAutoSkippedTo = seg[1];
+          if (window.ReactNativeWebView) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'sponsor-segment-skipped' }));
+          }
           break;
         }
       }
-      if (!inSegment && skipButtonEl) removeSkipButton();
     }, 400);
   })();
   true;

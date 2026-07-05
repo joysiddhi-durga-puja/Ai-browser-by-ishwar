@@ -737,6 +737,7 @@ export default function App() {
         showTabSwitcher={showTabSwitcher}
         onWebViewMessage={handleWebViewMessage}
         navigateToUrl={navigateToUrl}
+        createNewTab={createNewTab}
         showBrowserToast={showBrowserToast}
       />
 

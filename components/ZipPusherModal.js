@@ -11,12 +11,12 @@ const SKIP_PREFIXES = ['__MACOSX/', '.git/'];
 const shouldSkipEntry = (path) => SKIP_PREFIXES.some(prefix => path.startsWith(prefix) || path.includes(`/${prefix}`));
 
 const TOKEN_HELP_STEPS = [
-  'github.com par login karo',
-  'Top-right profile photo > Settings kholo',
-  'Left menu me sabse niche "Developer settings" pe jao',
-  '"Personal access tokens" > "Tokens (classic)" select karo',
-  '"Generate new token (classic)" pe click karo, naam do',
-  '"repo" checkbox tick karke "Generate token" dabao, phir usse copy kar yahan paste karo'
+  'Log in at github.com',
+  'Open your top-right profile photo > Settings',
+  'Scroll to the bottom of the left menu and go to "Developer settings"',
+  'Select "Personal access tokens" > "Tokens (classic)"',
+  'Click "Generate new token (classic)" and give it a name',
+  'Tick the "repo" checkbox, hit "Generate token", then copy it and paste it here'
 ];
 
 // Creates or updates one file in a GitHub repo via the Contents API.
@@ -128,7 +128,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
     const cleanToken = tokenDraft.trim();
     setGhToken(cleanToken);
     await AsyncStorage.setItem('@vault_gh_token', cleanToken);
-    showToast && showToast('GitHub token set ho gaya');
+    showToast && showToast('GitHub token saved');
     fetchRepoList(cleanToken);
     setScreen('main');
   };
@@ -188,10 +188,10 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
   };
 
   const pushPaths = async (paths) => {
-    if (!ghToken.trim()) { appendLog('Pehle gear icon se GitHub token set karo.'); return; }
+    if (!ghToken.trim()) { appendLog('Set your GitHub token first using the gear icon.'); return; }
     const [owner, repoName] = (repoPath || '').split('/').map(s => s.trim());
-    if (!owner || !repoName) { appendLog('Repository select karo dropdown se.'); return; }
-    if (!zipInstance || paths.length === 0) { appendLog('Push karne ke liye kuch nahi hai.'); return; }
+    if (!owner || !repoName) { appendLog('Select a repository from the dropdown.'); return; }
+    if (!zipInstance || paths.length === 0) { appendLog('Nothing to push.'); return; }
 
     setIsBusy(true);
     setProgress({ done: 0, total: paths.length });
@@ -254,7 +254,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
         <ScrollView style={layoutStyles.settingsMenuInnerOperationalContainerLayoutSectionBlock} keyboardShouldPersistTaps="handled">
           <View style={layoutStyles.settingsSectionBlockPadded}>
             <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Personal Access Token</Text>
-            <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Sirf isi device par store hota hai. "repo" scope wala token chahiye.</Text>
+            <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Stored only on this device. Needs a token with "repo" scope.</Text>
 
             <View style={{ position: 'relative', justifyContent: 'center' }}>
               <TextInput
@@ -286,7 +286,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
           <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', padding: 28 }}>
             <View style={{ backgroundColor: cardBg, borderRadius: 16, padding: 18, width: '100%', maxWidth: 340 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <Text style={{ fontSize: 16, fontWeight: '800', color: textColor }}>Token kaise banaye</Text>
+                <Text style={{ fontSize: 16, fontWeight: '800', color: textColor }}>How to create a token</Text>
                 <TouchableOpacity onPress={() => setShowTokenHelp(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                   <ViaIcon type="close" size={20} color={dimText} />
                 </TouchableOpacity>
@@ -301,7 +301,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
                 style={{ marginTop: 6, height: 40, borderRadius: 10, backgroundColor: '#4f46e5', justifyContent: 'center', alignItems: 'center' }}
                 onPress={() => setShowTokenHelp(false)}
               >
-                <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Samajh gaya</Text>
+                <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 13 }}>Got it</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -330,14 +330,14 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
         {!ghToken.trim() && (
           <View style={[layoutStyles.settingsSectionBlockPadded, { backgroundColor: isNightMode ? '#2d2d2d' : '#fef9c3', borderRadius: 12, paddingHorizontal: 14, marginTop: 10 }]}>
             <Text style={{ color: isNightMode ? '#facc15' : '#92400e', fontSize: 13, fontWeight: '600' }}>
-              ⚠ Pehle top-right gear icon se GitHub token set karo.
+              ⚠ Set your GitHub token first using the top-right gear icon.
             </Text>
           </View>
         )}
 
         <View style={layoutStyles.settingsSectionBlockPadded}>
           <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Repository</Text>
-          <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Us account ka repo select karo jispar push karna hai</Text>
+          <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Select the repo you want to push to</Text>
 
           <TouchableOpacity
             disabled={!ghToken.trim()}
@@ -387,7 +387,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
                 {selectedFileName} — {extractedPaths.length} file{extractedPaths.length === 1 ? '' : 's'} ready
               </Text>
               <Text style={{ color: dimText, fontSize: 12.5, marginTop: 4 }}>
-                Push hoga: {repoPath || '—'} ({branch || 'main'})
+                Will push to: {repoPath || '—'} ({branch || 'main'})
               </Text>
               <ScrollView style={{ maxHeight: 110, marginTop: 8 }}>
                 {extractedPaths.map((p, idx) => (
@@ -456,7 +456,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
         <TouchableOpacity style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', padding: 28 }} activeOpacity={1} onPress={() => setShowRepoDropdown(false)}>
           <View style={{ backgroundColor: cardBg, borderRadius: 16, padding: 14, width: '100%', maxWidth: 360, maxHeight: '70%' }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <Text style={{ fontSize: 15, fontWeight: '800', color: textColor }}>Repository chuno</Text>
+              <Text style={{ fontSize: 15, fontWeight: '800', color: textColor }}>Choose a repository</Text>
               <TouchableOpacity onPress={() => setShowRepoDropdown(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                 <ViaIcon type="close" size={20} color={dimText} />
               </TouchableOpacity>
@@ -464,7 +464,7 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
             {reposLoading ? (
               <ActivityIndicator color="#4f46e5" style={{ marginVertical: 20 }} />
             ) : repoList.length === 0 ? (
-              <Text style={{ color: dimText, fontSize: 13, paddingVertical: 16, textAlign: 'center' }}>Koi repo nahi mila. Token check karo.</Text>
+              <Text style={{ color: dimText, fontSize: 13, paddingVertical: 16, textAlign: 'center' }}>No repos found. Check your token.</Text>
             ) : (
               <ScrollView style={{ maxHeight: 320 }}>
                 {repoList.map((full_name) => (
