@@ -24,7 +24,7 @@ export const HOME_URL = 'aibrowser://home';
 //      never used here) and paste it below.
 // Leaving this blank keeps the manual-token screen as the only option.
 // ============================================================================
-export const GITHUB_OAUTH_CLIENT_ID = '';
+export const GITHUB_OAUTH_CLIENT_ID = 'Ov23liSGcCrB4MzOo6oN';
 export const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code';
 export const GITHUB_OAUTH_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 export const GITHUB_OAUTH_SCOPE = 'repo';
