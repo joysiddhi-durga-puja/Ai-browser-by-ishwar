@@ -9,6 +9,14 @@
 - Deploy hone ke baad URL milega jaise `https://your-app.vercel.app`.
 - `App.js` me line 20 pe `AI_ENDPOINT` ko `https://your-app.vercel.app/api/ask` se replace kar.
 
+## 2b. GitHub "Connect" button (no manual token) — optional setup
+- Manual Personal Access Token wala option hamesha kaam karta rahega, ye sirf ek aasan alternative hai.
+- github.com/settings/developers > "New OAuth App" bana (Homepage URL / Callback URL me kuch bhi valid daal de, device flow unko use nahi karta).
+- App create hone ke baad, uski settings page pe "Enable Device Flow" tick kar.
+- Us page se "Client ID" copy kar (client secret NAHI — wo is flow me kabhi use hi nahi hota).
+- `constants.js` me `GITHUB_OAUTH_CLIENT_ID = ''` ke andar apna Client ID paste kar.
+- Isse zero backend chahiye — pura flow app ke andar hi ho jata hai (GitHub ka apna device-code + poll-for-token system).
+
 ## 3. App build (bina PC ke)
 - Naya dependency add hua hai: `react-native-view-shot` (tab thumbnails ke liye) aur `expo-local-authentication` (fingerprint App Lock ke liye). Build/dev se pehle:
   - `npx expo install react-native-view-shot expo-local-authentication` (ya seedha `npm install` — package.json me already add hai)

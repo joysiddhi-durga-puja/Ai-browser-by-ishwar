@@ -10,6 +10,25 @@
 // of mounting a WebView.
 export const HOME_URL = 'aibrowser://home';
 
+// ============================================================================
+// GITHUB OAUTH DEVICE FLOW
+// Lets someone connect their GitHub account without ever copying a Personal
+// Access Token by hand. Device Flow is the same mechanism TV/CLI apps use
+// (e.g. `gh auth login`) — no client secret involved at any step, so it's
+// safe to ship fully client-side with nothing hidden. To turn this on:
+//   1. Go to github.com/settings/developers > "New OAuth App"
+//   2. Any Homepage URL / Authorization callback URL works (device flow
+//      never redirects back to one) — just fill in something valid.
+//   3. On the app's settings page, tick "Enable Device Flow".
+//   4. Copy the generated "Client ID" (NOT the client secret — that one is
+//      never used here) and paste it below.
+// Leaving this blank keeps the manual-token screen as the only option.
+// ============================================================================
+export const GITHUB_OAUTH_CLIENT_ID = '';
+export const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code';
+export const GITHUB_OAUTH_TOKEN_URL = 'https://github.com/login/oauth/access_token';
+export const GITHUB_OAUTH_SCOPE = 'repo';
+
 export const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 
 export const AVAILABLE_AI_MODELS = [
@@ -132,6 +151,29 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
       return false;
     }
 
+    // Button-independent fallback. YouTube's player container itself gets
+    // an "ad-showing"/"ad-interrupting" class the instant an ad starts —
+    // that class name has stayed stable for years even while the Skip
+    // button's own class names keep changing, and it's also true for ads
+    // that have no Skip button at all (unskippable pre-rolls still show
+    // this class, so jumping the ad's own <video> element straight to its
+    // end is the only way to get past those). This runs first every tick;
+    // clickSkipIfPresent below is kept purely as a secondary path for any
+    // odd case this misses.
+    function forceSkipAdByJumpingToEnd() {
+      var player = document.querySelector('.html5-video-player, #movie_player');
+      if (!player) return false;
+      var isAdShowing = player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
+      if (!isAdShowing) return false;
+      var video = document.querySelector('video.html5-main-video, video');
+      if (video && isFinite(video.duration) && video.duration > 0 && video.currentTime < video.duration - 0.25) {
+        try { video.muted = true; } catch (e) {}
+        video.currentTime = video.duration;
+        return true;
+      }
+      return false;
+    }
+
     // Interval + MutationObserver both call this, so throttle to avoid
     // hammering it on every tiny DOM change (captions, progress bar, etc
     // mutate constantly during playback).
@@ -140,12 +182,18 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
       var now = Date.now();
       if (now - lastCheckAt < 250) return;
       lastCheckAt = now;
+      if (forceSkipAdByJumpingToEnd()) return;
       clickSkipIfPresent();
     }
 
     setInterval(throttledCheck, 300);
     var adObserver = new MutationObserver(throttledCheck);
     adObserver.observe(document.body, { childList: true, subtree: true });
+    // The jump-to-end check is a single cheap classList read, so it can
+    // safely run much faster than the throttled button search above —
+    // this is what actually makes the skip feel instant instead of
+    // waiting up to ~300ms.
+    setInterval(forceSkipAdByJumpingToEnd, 100);
   })();
   true;
 `;
@@ -184,11 +232,23 @@ export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
     function fetchSegments(videoId) {
       var categories = encodeURIComponent(JSON.stringify(['sponsor', 'selfpromo', 'interaction']));
       var url = 'https://sponsor.ajay.app/api/skipSegments?videoID=' + encodeURIComponent(videoId) + '&categories=' + categories;
-      fetch(url).then(function(res) {
-        return res.ok ? res.json() : [];
-      }).then(function(data) {
-        segments = (data || []).map(function(item) { return item.segment; });
-      }).catch(function() { segments = []; });
+      function attempt(retriesLeft) {
+        fetch(url).then(function(res) {
+          return res.ok ? res.json() : [];
+        }).then(function(data) {
+          segments = (data || []).map(function(item) { return item.segment; });
+        }).catch(function() {
+          // The public SponsorBlock server is community-run and sometimes
+          // slow/overloaded — one retry after a short delay covers a
+          // transient timeout without hammering it on every failure.
+          if (retriesLeft > 0) {
+            setTimeout(function() { attempt(retriesLeft - 1); }, 4000);
+          } else {
+            segments = [];
+          }
+        });
+      }
+      attempt(1);
     }
 
     function checkForVideoChange() {

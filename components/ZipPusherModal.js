@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, ActivityIndicator, Modal } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import { View, Text, ScrollView, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, ActivityIndicator, Modal, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import JSZip from 'jszip';
 import layoutStyles from '../styles';
 import ViaIcon from '../ViaIcon';
+import { GITHUB_OAUTH_CLIENT_ID, GITHUB_DEVICE_CODE_URL, GITHUB_OAUTH_TOKEN_URL, GITHUB_OAUTH_SCOPE } from '../constants';
 
 const SKIP_PREFIXES = ['__MACOSX/', '.git/'];
 const shouldSkipEntry = (path) => SKIP_PREFIXES.some(prefix => path.startsWith(prefix) || path.includes(`/${prefix}`));
@@ -73,6 +75,14 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
   const [branch, setBranch] = useState('main');
   const [commitMessage, setCommitMessage] = useState('Update via AI Browser ZIP Pusher');
 
+  // --- GitHub OAuth Device Flow state ---
+  // 'idle' -> 'waiting' (code shown, polling) -> 'idle' again on success/error
+  const [deviceFlowState, setDeviceFlowState] = useState('idle');
+  const [deviceUserCode, setDeviceUserCode] = useState('');
+  const [deviceVerificationUri, setDeviceVerificationUri] = useState('');
+  const [deviceFlowError, setDeviceFlowError] = useState('');
+  const devicePollRef = useRef(null);
+
   const [repoList, setRepoList] = useState([]);
   const [reposLoading, setReposLoading] = useState(false);
 
@@ -131,6 +141,110 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
     showToast && showToast('GitHub token saved');
     fetchRepoList(cleanToken);
     setScreen('main');
+  };
+
+  // Stops any in-flight device-flow polling — called on unmount and right
+  // before starting a fresh attempt so two polling loops never overlap.
+  const stopDevicePolling = () => {
+    if (devicePollRef.current) {
+      clearTimeout(devicePollRef.current);
+      devicePollRef.current = null;
+    }
+  };
+  useEffect(() => stopDevicePolling, []);
+
+  // Kicks off GitHub's Device Flow: request a user_code + device_code, show
+  // the code so the person can enter it at github.com/login/device, then
+  // poll the token endpoint on the interval GitHub tells us to use until
+  // they finish (or it expires / they deny it).
+  const startGithubDeviceFlow = async () => {
+    if (!GITHUB_OAUTH_CLIENT_ID) {
+      setDeviceFlowError('GitHub connect isn\'t set up yet — ask the developer to add a Client ID.');
+      return;
+    }
+    stopDevicePolling();
+    setDeviceFlowError('');
+    setDeviceFlowState('requesting');
+    try {
+      const resp = await fetch(GITHUB_DEVICE_CODE_URL, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: GITHUB_OAUTH_CLIENT_ID, scope: GITHUB_OAUTH_SCOPE })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.device_code) {
+        throw new Error(data.error_description || 'Could not start GitHub sign-in.');
+      }
+      setDeviceUserCode(data.user_code);
+      setDeviceVerificationUri(data.verification_uri_complete || data.verification_uri);
+      setDeviceFlowState('waiting');
+      pollForDeviceToken(data.device_code, (data.interval || 5) * 1000, Date.now() + (data.expires_in || 900) * 1000);
+    } catch (e) {
+      setDeviceFlowError(e.message || 'Could not reach GitHub. Check your connection.');
+      setDeviceFlowState('idle');
+    }
+  };
+
+  const pollForDeviceToken = (deviceCode, intervalMs, expiresAt) => {
+    devicePollRef.current = setTimeout(async () => {
+      if (Date.now() > expiresAt) {
+        setDeviceFlowError('That code expired — tap Connect to get a new one.');
+        setDeviceFlowState('idle');
+        return;
+      }
+      try {
+        const resp = await fetch(GITHUB_OAUTH_TOKEN_URL, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: GITHUB_OAUTH_CLIENT_ID,
+            device_code: deviceCode,
+            grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
+          })
+        });
+        const data = await resp.json();
+        if (data.access_token) {
+          setGhToken(data.access_token);
+          setTokenDraft(data.access_token);
+          await AsyncStorage.setItem('@vault_gh_token', data.access_token);
+          showToast && showToast('GitHub account connected');
+          fetchRepoList(data.access_token);
+          setDeviceFlowState('idle');
+          setDeviceUserCode('');
+          return;
+        }
+        if (data.error === 'authorization_pending') {
+          pollForDeviceToken(deviceCode, intervalMs, expiresAt);
+        } else if (data.error === 'slow_down') {
+          pollForDeviceToken(deviceCode, intervalMs + 5000, expiresAt);
+        } else if (data.error === 'access_denied') {
+          setDeviceFlowError('Sign-in was cancelled.');
+          setDeviceFlowState('idle');
+        } else if (data.error === 'expired_token') {
+          setDeviceFlowError('That code expired — tap Connect to get a new one.');
+          setDeviceFlowState('idle');
+        } else {
+          setDeviceFlowError(data.error_description || 'GitHub sign-in failed.');
+          setDeviceFlowState('idle');
+        }
+      } catch (e) {
+        // Transient network hiccup — keep polling rather than give up.
+        pollForDeviceToken(deviceCode, intervalMs, expiresAt);
+      }
+    }, intervalMs);
+  };
+
+  const copyDeviceCode = async () => {
+    if (!deviceUserCode) return;
+    await Clipboard.setStringAsync(deviceUserCode);
+    showToast && showToast('Code copied');
+  };
+
+  const cancelDeviceFlow = () => {
+    stopDevicePolling();
+    setDeviceFlowState('idle');
+    setDeviceUserCode('');
+    setDeviceFlowError('');
   };
 
   const selectRepo = async (fullName) => {
@@ -253,6 +367,62 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
         </View>
 
         <ScrollView style={layoutStyles.settingsMenuInnerOperationalContainerLayoutSectionBlock} keyboardShouldPersistTaps="handled">
+          <View style={layoutStyles.settingsSectionBlockPadded}>
+            <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Connect with GitHub</Text>
+            <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>No token to copy-paste — sign in with a one-time code instead.</Text>
+
+            {deviceFlowState === 'idle' && (
+              <TouchableOpacity
+                style={[layoutStyles.settingsSaveAiConfigButton, { backgroundColor: '#0f172a', marginTop: 10 }]}
+                onPress={startGithubDeviceFlow}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 15 }}>🔗 Connect GitHub Account</Text>
+              </TouchableOpacity>
+            )}
+
+            {deviceFlowState === 'requesting' && (
+              <View style={{ marginTop: 10, alignItems: 'center', paddingVertical: 10 }}>
+                <ActivityIndicator color="#4f46e5" />
+              </View>
+            )}
+
+            {deviceFlowState === 'waiting' && (
+              <View style={{ marginTop: 12, backgroundColor: isNightMode ? '#1e1e1e' : '#f8fafc', borderRadius: 14, padding: 16, borderWidth: 1, borderColor }}>
+                <Text style={{ color: dimText, fontSize: 12.5 }}>Enter this code at github.com/login/device</Text>
+                <TouchableOpacity onPress={copyDeviceCode} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8 }}>
+                  <Text style={{ color: textColor, fontSize: 26, fontWeight: '800', letterSpacing: 3 }}>{deviceUserCode}</Text>
+                  <ViaIcon type="copy" size={18} color={dimText} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[layoutStyles.settingsSaveAiConfigButton, { backgroundColor: '#4f46e5', marginTop: 14, marginBottom: 0 }]}
+                  onPress={() => deviceVerificationUri && Linking.openURL(deviceVerificationUri)}
+                >
+                  <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 15 }}>Open GitHub to Authorize</Text>
+                </TouchableOpacity>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 14 }}>
+                  <ActivityIndicator color={dimText} size="small" />
+                  <Text style={{ color: dimText, fontSize: 12.5, marginLeft: 8 }}>Waiting for you to authorize...</Text>
+                </View>
+
+                <TouchableOpacity onPress={cancelDeviceFlow} style={{ marginTop: 12 }}>
+                  <Text style={{ color: '#ef4444', fontSize: 13, fontWeight: '600' }}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {!!deviceFlowError && (
+              <Text style={{ color: '#ef4444', fontSize: 12.5, marginTop: 10 }}>{deviceFlowError}</Text>
+            )}
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginVertical: 6 }}>
+            <View style={{ flex: 1, height: 1, backgroundColor: borderColor }} />
+            <Text style={{ color: dimText, fontSize: 12, marginHorizontal: 10 }}>OR PASTE A TOKEN MANUALLY</Text>
+            <View style={{ flex: 1, height: 1, backgroundColor: borderColor }} />
+          </View>
+
           <View style={layoutStyles.settingsSectionBlockPadded}>
             <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Personal Access Token</Text>
             <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Stored only on this device. Needs a token with "repo" scope.</Text>
