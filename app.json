@@ -21,27 +21,53 @@
         "POST_NOTIFICATIONS",
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
-        "CAMERA"
+        "CAMERA",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ],
       "intentFilters": [
         {
           "action": "VIEW",
           "autoVerify": false,
           "data": [
-            { "scheme": "http" },
-            { "scheme": "https" }
+            {
+              "scheme": "http"
+            },
+            {
+              "scheme": "https"
+            }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
     "plugins": [
       "./plugins/withBackgroundAudio.js",
-      ["expo-local-authentication", { "faceIDPermission": "Allow AI Browser to use Face ID to unlock the app." }],
-      ["expo-camera", { "cameraPermission": "Allow AI Browser to use the camera to scan QR codes." }]
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow AI Browser to use Face ID to unlock the app."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow AI Browser to use the camera to scan QR codes."
+        }
+      ]
     ],
     "ios": {
       "bundleIdentifier": "com.iswar.aibrowser"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b6a492e2-da37-48a8-9ad8-4dd56a025027"
+      }
     }
   }
 }
