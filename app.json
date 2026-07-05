@@ -18,7 +18,10 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "WAKE_LOCK",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT",
+        "CAMERA"
       ],
       "intentFilters": [
         {
@@ -32,7 +35,11 @@
         }
       ]
     },
-    "plugins": ["./plugins/withBackgroundAudio.js"],
+    "plugins": [
+      "./plugins/withBackgroundAudio.js",
+      ["expo-local-authentication", { "faceIDPermission": "Allow AI Browser to use Face ID to unlock the app." }],
+      ["expo-camera", { "cameraPermission": "Allow AI Browser to use the camera to scan QR codes." }]
+    ],
     "ios": {
       "bundleIdentifier": "com.iswar.aibrowser"
     }

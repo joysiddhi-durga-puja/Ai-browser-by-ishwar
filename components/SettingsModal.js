@@ -16,6 +16,8 @@ export default function SettingsModal({
   persistAiSettings,
   downloadFolderLabel,
   chooseDownloadFolder,
+  isAppLockEnabled,
+  toggleAppLock,
   setCurrentModal
 }) {
   const [page, setPage] = useState('root'); // 'root' | 'ai' | 'download'
@@ -27,8 +29,9 @@ export default function SettingsModal({
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[layoutStyles.fullscreenSystemOverlayContainerBlock, isNightMode && layoutStyles.nightModeShellBG]}>
       <View style={[layoutStyles.modalSingleHeaderTitleNavbarElementBlock, isNightMode && layoutStyles.nightComponentPanel, { flexDirection: 'row', alignItems: 'center' }]}>
-        <TouchableOpacity onPress={onBack} style={{ paddingRight: 12 }}>
+        <TouchableOpacity onPress={onBack} style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 12 }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}>
           <Text style={{ fontSize: 22, color: isNightMode ? '#ffffff' : '#0f172a' }}>‹</Text>
+          <Text style={{ fontSize: 16, marginLeft: 2, color: isNightMode ? '#ffffff' : '#0f172a' }}>Back</Text>
         </TouchableOpacity>
         <Text style={[layoutStyles.modalSingleNavbarHeaderHeadlineTitleLabelString, isNightMode && { color: '#ffffff' }]}>{headerTitle}</Text>
       </View>
@@ -43,6 +46,14 @@ export default function SettingsModal({
             <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>Download settings</Text>
             <Text style={{ fontSize: 20, color: '#94a3b8' }}>›</Text>
           </TouchableOpacity>
+
+          <View style={layoutStyles.settingsPanelInteractiveToggleConfigurationRowItem}>
+            <View style={{ flex: 1, marginRight: 16 }}>
+              <Text style={[layoutStyles.settingsToggleItemPrimaryHeadlineLabelTextString, isNightMode && { color: '#ffffff' }]}>App Lock (Fingerprint)</Text>
+              <Text style={layoutStyles.settingsToggleItemSecondarySubDescriptionTextString}>Require your fingerprint every time you open the app</Text>
+            </View>
+            <Switch value={!!isAppLockEnabled} onValueChange={toggleAppLock} />
+          </View>
         </ScrollView>
       )}
 

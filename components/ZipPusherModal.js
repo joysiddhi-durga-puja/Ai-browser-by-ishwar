@@ -245,8 +245,9 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
     return (
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[layoutStyles.fullscreenSystemOverlayContainerBlock, isNightMode && layoutStyles.nightModeShellBG]}>
         <View style={[layoutStyles.modalSingleHeaderTitleNavbarElementBlock, isNightMode && layoutStyles.nightComponentPanel, { flexDirection: 'row', alignItems: 'center' }]}>
-          <TouchableOpacity onPress={() => setScreen('main')} style={{ paddingRight: 12 }}>
+          <TouchableOpacity onPress={() => setScreen('main')} style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 12 }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}>
             <ViaIcon type="back_chevron" size={22} color={textColor} />
+            <Text style={{ fontSize: 16, marginLeft: 2, color: textColor }}>Back</Text>
           </TouchableOpacity>
           <Text style={[layoutStyles.modalSingleNavbarHeaderHeadlineTitleLabelString, isNightMode && { color: '#ffffff' }]}>GitHub Token Settings</Text>
         </View>
@@ -315,8 +316,9 @@ export default function ZipPusherModal({ visible, isNightMode, setCurrentModal, 
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[layoutStyles.fullscreenSystemOverlayContainerBlock, isNightMode && layoutStyles.nightModeShellBG]}>
       <View style={[layoutStyles.modalSingleHeaderTitleNavbarElementBlock, isNightMode && layoutStyles.nightComponentPanel, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <TouchableOpacity onPress={closePanel} style={{ paddingRight: 12 }}>
+          <TouchableOpacity onPress={closePanel} style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 12 }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}>
             <ViaIcon type="back_chevron" size={22} color={textColor} />
+            <Text style={{ fontSize: 16, marginLeft: 2, color: textColor }}>Back</Text>
           </TouchableOpacity>
           <Text style={[layoutStyles.modalSingleNavbarHeaderHeadlineTitleLabelString, isNightMode && { color: '#ffffff' }]}>ZIP → GitHub Pusher</Text>
         </View>

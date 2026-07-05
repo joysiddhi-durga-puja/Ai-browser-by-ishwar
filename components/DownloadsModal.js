@@ -34,8 +34,9 @@ export default function DownloadsModal({ visible, downloads, isNightMode, setCur
       <Animated.View style={[layoutStyles.historyPanelSlideContainer, isNightMode && layoutStyles.nightModeShellBG, { transform: [{ translateX: slideX }] }]}>
 
         <View style={[layoutStyles.historyPanelHeaderRow, isNightMode && layoutStyles.nightComponentPanel]}>
-          <TouchableOpacity onPress={closePanel} style={layoutStyles.historyPanelBackBtn}>
+          <TouchableOpacity onPress={closePanel} style={[layoutStyles.historyPanelBackBtn, { width: 'auto', paddingHorizontal: 8, flexDirection: 'row' }]}>
             <ViaIcon type="back_chevron" size={22} color={isNightMode ? '#e2e8f0' : '#334155'} />
+            <Text style={{ fontSize: 16, marginLeft: 2, color: isNightMode ? '#e2e8f0' : '#334155' }}>Back</Text>
           </TouchableOpacity>
           <View style={layoutStyles.downloadPanelTitleRow}>
             <Text style={[layoutStyles.downloadPanelTitleText, isNightMode && { color: '#ffffff' }]}>Downloads</Text>

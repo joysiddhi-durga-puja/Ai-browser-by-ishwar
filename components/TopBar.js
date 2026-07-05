@@ -16,13 +16,12 @@ export default function TopBar({
   submitHomeSearch,
   activateHomeSearch,
   setIsHomeSearchActive,
-  setShowTabSwitcher,
   inputUrl,
   setInputUrl,
   navigateToUrl,
   progress,
   createNewTab,
-  tabsCount
+  openQrScanner
 }) {
   if (isHomeActive) {
     return (
@@ -48,13 +47,15 @@ export default function TopBar({
             </TouchableOpacity>
           </>
         ) : (
-          <TouchableOpacity style={layoutStyles.homeNavbarLabelRow} activeOpacity={0.7} onPress={activateHomeSearch}>
-            <ViaIcon type="search" color={isNightMode ? '#94a3b8' : '#475569'} size={20} />
-            <Text style={[layoutStyles.homeNavbarLabelText, isNightMode && { color: '#e2e8f0' }]}>Homepage</Text>
-            <TouchableOpacity style={layoutStyles.navbarIconButtonAsset} onPress={() => setShowTabSwitcher(true)}>
-              <ViaIcon type="collapse" color={isNightMode ? '#cbd5e1' : '#475569'} size={20} />
+          <>
+            <TouchableOpacity style={[layoutStyles.homeNavbarLabelRow, { flex: 1 }]} activeOpacity={0.7} onPress={activateHomeSearch}>
+              <ViaIcon type="search" color={isNightMode ? '#94a3b8' : '#475569'} size={20} />
+              <Text style={[layoutStyles.homeNavbarLabelText, isNightMode && { color: '#e2e8f0' }]}>Homepage</Text>
             </TouchableOpacity>
-          </TouchableOpacity>
+            <TouchableOpacity style={layoutStyles.navbarIconButtonAsset} onPress={openQrScanner}>
+              <ViaIcon type="qr_scan" color={isNightMode ? '#cbd5e1' : '#475569'} size={20} />
+            </TouchableOpacity>
+          </>
         )}
       </View>
     );
@@ -82,8 +83,8 @@ export default function TopBar({
         )}
       </View>
 
-      <TouchableOpacity style={layoutStyles.navbarIconButtonAsset} onPress={() => setShowTabSwitcher(true)}>
-        <View style={layoutStyles.tabsNumberIndicatorBadge}><Text style={layoutStyles.tabsCounterTextString}>{tabsCount}</Text></View>
+      <TouchableOpacity style={layoutStyles.navbarIconButtonAsset} onPress={openQrScanner}>
+        <ViaIcon type="qr_scan" color={isNightMode ? '#cbd5e1' : '#475569'} size={20} />
       </TouchableOpacity>
     </View>
   );

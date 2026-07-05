@@ -10,8 +10,8 @@
 - `App.js` me line 20 pe `AI_ENDPOINT` ko `https://your-app.vercel.app/api/ask` se replace kar.
 
 ## 3. App build (bina PC ke)
-- Naya dependency add hua hai: `react-native-view-shot` (tab thumbnails ke liye). Build/dev se pehle:
-  - `npx expo install react-native-view-shot` (ya seedha `npm install` — package.json me already add hai)
+- Naya dependency add hua hai: `react-native-view-shot` (tab thumbnails ke liye) aur `expo-local-authentication` (fingerprint App Lock ke liye). Build/dev se pehle:
+  - `npx expo install react-native-view-shot expo-local-authentication` (ya seedha `npm install` — package.json me already add hai)
 - Mobile pe Expo Go se local test kar sakta hai:
   - `npx expo start` — but WebView tabs/injectedJavaScript Expo Go me kabhi kabhi glitch karte hain, isliye final build EAS se le.
 - **EAS Build (cloud, PC nahi chahiye):**
@@ -34,6 +34,7 @@
   - **TL;DR** — 3-5 bullet quick summary, triggered by scroll or manually.
   - **Find Q&A** — scans the page for FAQs/quiz/form questions and answers each one.
 - **App icon + splash screen** — custom branded assets in `/assets` (`icon.png`, `splash.png`, `adaptive-icon.png`). Placeholder logo generated for now — drop your own PNGs at the same paths/sizes to rebrand any time, no other code changes needed.
+- **App Lock (Fingerprint)** — toggle in Settings; when on, the app opens to a fingerprint-only lock screen every fresh launch and every time it comes back from the background (home button, app switcher, screen off). Fails open (never traps you) if the phone has no fingerprint set up.
 - Error states handled: failed page loads (retry button), AI backend unreachable (clear error message instead of silent fail).
 - Long-press the ✨ AI button to open a blank AI panel without auto-running a mode.
 

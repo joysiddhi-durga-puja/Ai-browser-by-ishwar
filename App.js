@@ -8,12 +8,14 @@ import {
   BackHandler,
   Alert,
   Share,
-  Animated
+  Animated,
+  AppState
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ScreenCapture from 'expo-screen-capture';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { Platform } from 'react-native';
 
 const SAF = FileSystem.StorageAccessFramework;
@@ -58,6 +60,8 @@ import DownloadsModal from './components/DownloadsModal';
 import SettingsModal from './components/SettingsModal';
 import ZipPusherModal from './components/ZipPusherModal';
 import AiPanel from './components/AiPanel';
+import AppLockScreen from './components/AppLockScreen';
+import QrScannerModal from './components/QrScannerModal';
 
 // ============================================================================
 // COMPONENT MAIN MODULE ENTRY
@@ -89,6 +93,7 @@ export default function App() {
   const [isNightMode, setIsNightMode] = useState(false);
   const [isIncognito, setIsIncognito] = useState(false);
   const [isDesktopMode, setIsDesktopMode] = useState(false);
+  const [showQrScanner, setShowQrScanner] = useState(false);
 
   const [toastMessage, setToastMessage] = useState('');
   const [showToast, setShowToast] = useState(false);
@@ -108,6 +113,15 @@ export default function App() {
   // whatever the user picks in the system folder dialog).
   const [downloadFolderUri, setDownloadFolderUri] = useState(null);
   const [downloadFolderLabel, setDownloadFolderLabel] = useState('Not set — tap to choose');
+
+  // --- FINGERPRINT APP LOCK ---
+  // isAppLockEnabled is the persisted on/off setting. isAppUnlocked is
+  // purely a per-session flag — it's never saved, so every fresh app
+  // launch (and every return from the background, handled by the
+  // AppState effect below) starts locked again whenever the setting is on.
+  const [isAppLockEnabled, setIsAppLockEnabled] = useState(false);
+  const [isAppUnlocked, setIsAppUnlocked] = useState(true);
+  const [unlockFailed, setUnlockFailed] = useState(false);
 
   const slideAnimation = useRef(new Animated.Value(350)).current;
   const toastFadeAnim = useRef(new Animated.Value(0)).current;
@@ -147,6 +161,9 @@ export default function App() {
 
   useEffect(() => {
     const backAction = () => {
+      // Locked — swallow back presses instead of letting them reach (and
+      // silently mutate) whatever's hidden underneath the lock screen.
+      if (isAppLockEnabled && !isAppUnlocked) { return true; }
       if (showAiPanel) { setShowAiPanel(false); return true; }
       if (currentModal) { setCurrentModal(null); return true; }
       if (showTabSwitcher) { setShowTabSwitcher(false); return true; }
@@ -161,7 +178,7 @@ export default function App() {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [showAiPanel, currentModal, showTabSwitcher, isMenuVisible, isHomeSearchActive, activeTabId, tabs]);
+  }, [showAiPanel, currentModal, showTabSwitcher, isMenuVisible, isHomeSearchActive, activeTabId, tabs, isAppLockEnabled, isAppUnlocked]);
 
   useEffect(() => { initializeLocalDatabase(); }, []);
 
@@ -196,6 +213,75 @@ export default function App() {
     }
   }, [tabs]);
 
+  // Re-locks the app the moment it leaves the foreground (home button,
+  // app switcher, incoming call, screen off, etc). Only the transition
+  // INTO background/inactive matters here — coming back to 'active' is
+  // handled simply by isAppUnlocked already being false, which makes the
+  // lock screen render (see the early-return in the main JSX below).
+  const appStateRef = useRef(AppState.currentState);
+  useEffect(() => {
+    if (!isAppLockEnabled) return;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const wasActive = appStateRef.current === 'active';
+      appStateRef.current = nextState;
+      if (wasActive && nextState !== 'active') {
+        setIsAppUnlocked(false);
+        setUnlockFailed(false);
+      }
+    });
+    return () => subscription.remove();
+  }, [isAppLockEnabled]);
+
+  const attemptUnlock = async () => {
+    try {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      if (!hasHardware || !isEnrolled) {
+        // No fingerprint/face configured on this device at all — don't
+        // trap the person behind a lock screen they have no way to open.
+        showBrowserToast("No fingerprint set up on this device — unlocking");
+        setIsAppUnlocked(true);
+        return;
+      }
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Unlock AI Browser',
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: false
+      });
+      if (result.success) {
+        setIsAppUnlocked(true);
+        setUnlockFailed(false);
+      } else {
+        setUnlockFailed(true);
+      }
+    } catch (e) {
+      // Something went wrong with the biometric API itself — fail open
+      // rather than permanently locking the person out of their own app.
+      showBrowserToast("Fingerprint check failed — unlocking");
+      setIsAppUnlocked(true);
+    }
+  };
+
+  // Called from Settings when the person flips the App Lock switch.
+  const toggleAppLock = async (nextValue) => {
+    if (nextValue) {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      if (!hasHardware) {
+        showBrowserToast("This device has no fingerprint/face hardware");
+        return;
+      }
+      if (!isEnrolled) {
+        showBrowserToast("Set up a fingerprint in phone Settings first");
+        return;
+      }
+    }
+    setIsAppLockEnabled(nextValue);
+    setIsAppUnlocked(true);
+    await AsyncStorage.setItem('@vault_app_lock_enabled', JSON.stringify(nextValue));
+    showBrowserToast(nextValue ? "App Lock enabled" : "App Lock disabled");
+  };
+
   const initializeLocalDatabase = async () => {
     try {
       const storedBookmarks = await AsyncStorage.getItem('@vault_bookmarks');
@@ -205,6 +291,7 @@ export default function App() {
       const storedTheme = await AsyncStorage.getItem('@vault_night_mode');
       const storedAiApiKey = await AsyncStorage.getItem('@vault_ai_api_key');
       const storedAiModel = await AsyncStorage.getItem('@vault_ai_model');
+      const storedAppLockEnabled = await AsyncStorage.getItem('@vault_app_lock_enabled');
 
       if (storedBookmarks) setBookmarks(JSON.parse(storedBookmarks));
       if (storedHistory) setHistory(JSON.parse(storedHistory));
@@ -213,6 +300,10 @@ export default function App() {
       if (storedTheme) setIsNightMode(JSON.parse(storedTheme));
       if (storedAiApiKey) { setAiApiKey(storedAiApiKey); setAiApiKeyDraft(storedAiApiKey); }
       if (storedAiModel) setAiModel(storedAiModel);
+      if (storedAppLockEnabled && JSON.parse(storedAppLockEnabled)) {
+        setIsAppLockEnabled(true);
+        setIsAppUnlocked(false);
+      }
     } catch (error) {
       console.warn("Storage exception dynamic baseline handler:", error);
     }
@@ -246,6 +337,23 @@ export default function App() {
 
   const updateTabState = (targetId, mutatedState) => {
     setTabs(prev => prev.map(currentTab => currentTab.id === targetId ? { ...currentTab, ...mutatedState } : currentTab));
+  };
+
+  // Opens the full-screen QR scanner. Works from either the Homepage
+  // navbar or the normal browsing navbar (same "openQrScanner" prop).
+  const openQrScanner = () => {
+    toggleBottomMenu(false);
+    setShowQrScanner(true);
+  };
+
+  // Whatever the QR code decodes to gets handed straight to navigateToUrl,
+  // which already knows how to tell a real URL apart from plain text
+  // (plain text falls back to a Google search, just like typing it in).
+  const handleQrScanned = (decodedText) => {
+    setShowQrScanner(false);
+    if (!decodedText) return;
+    navigateToUrl(decodedText.trim());
+    showBrowserToast('QR code scanned');
   };
 
   // Sends the active tab back to the built-in Homepage screen.
@@ -720,6 +828,7 @@ export default function App() {
         createNewTab={createNewTab}
         tabsCount={tabs.length}
         isIncognitoTab={activeTab.isIncognito}
+        openQrScanner={openQrScanner}
       />
 
       <BrowserTabsView
@@ -818,6 +927,8 @@ export default function App() {
         persistAiSettings={persistAiSettings}
         downloadFolderLabel={downloadFolderLabel}
         chooseDownloadFolder={chooseDownloadFolder}
+        isAppLockEnabled={isAppLockEnabled}
+        toggleAppLock={toggleAppLock}
         setCurrentModal={setCurrentModal}
       />
 
@@ -840,6 +951,16 @@ export default function App() {
         showAutoAnswerButton={!!aiApiKey && !isHomeActive && !!activeTab.hasUnansweredQuestions}
         triggerAutoAnswer={triggerAutoAnswer}
       />
+
+      <QrScannerModal
+        visible={showQrScanner}
+        onClose={() => setShowQrScanner(false)}
+        onScanned={handleQrScanned}
+      />
+
+      {isAppLockEnabled && !isAppUnlocked && (
+        <AppLockScreen isNightMode={isNightMode} attemptUnlock={attemptUnlock} unlockFailed={unlockFailed} />
+      )}
     </SafeAreaView>
   );
 }

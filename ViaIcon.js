@@ -178,6 +178,34 @@ const ViaIcon = ({ type, color = '#475569', size = 24 }) => {
           <Path d="M15 18l-6-6 6-6" />
         </Svg>
       );
+    case 'fingerprint':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2c0 3.5-1.5 6.5-4 8.5" />
+          <Path d="M8 11a4 4 0 0 1 8 0c0 4-2 7-5 9.5" />
+          <Path d="M4.5 15A11.9 11.9 0 0 1 4 11a8 8 0 0 1 15.5-2.8" />
+          <Path d="M2.5 8.5A11.9 11.9 0 0 0 2 11c0 1.8.3 3.5.9 5.1" />
+          <Path d="M15 20.5c2.9-1.6 5-4.9 5-9.5a7.9 7.9 0 0 0-.5-2.8" />
+          <Path d="M12 11v1c0 3-.8 5.5-2.3 7.6" />
+        </Svg>
+      );
+    case 'lock':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Rect x="5" y="11" width="14" height="10" rx="2" />
+          <Path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        </Svg>
+      );
+    case 'qr_scan':
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <Path d="M3 7V5a2 2 0 0 1 2-2h2" />
+          <Path d="M17 3h2a2 2 0 0 1 2 2v2" />
+          <Path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+          <Path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+          <Line x1="7" y1="12" x2="17" y2="12" />
+        </Svg>
+      );
     default:
       return null;
   }
