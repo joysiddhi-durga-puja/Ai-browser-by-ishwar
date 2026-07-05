@@ -12,15 +12,16 @@ import {
   PAGE_QUESTION_SCAN_JS,
   YOUTUBE_AD_SKIP_INJECTED_JS,
   YOUTUBE_SPONSOR_SKIP_INJECTED_JS,
+  MEDIA_PLAY_STATE_INJECTED_JS,
   isLikelyDownloadUrl
 } from '../constants';
 
 // Combines whichever injected scripts are currently active into one payload
-// so both can run together on initial page load. The two YouTube scripts
-// are always included — both are domain-gated internally and no-op
-// instantly on every site that isn't youtube.com.
+// so both can run together on initial page load. The YouTube scripts and the
+// media play-state watcher are always included — all are domain/feature
+// gated internally and no-op instantly where they don't apply.
 const buildInjectedJs = (nightModeOn, desktopModeOn) => {
-  const scripts = [YOUTUBE_AD_SKIP_INJECTED_JS, YOUTUBE_SPONSOR_SKIP_INJECTED_JS];
+  const scripts = [YOUTUBE_AD_SKIP_INJECTED_JS, YOUTUBE_SPONSOR_SKIP_INJECTED_JS, MEDIA_PLAY_STATE_INJECTED_JS];
   if (nightModeOn) scripts.push(NIGHT_MODE_INJECTED_JS);
   if (desktopModeOn) scripts.push(DESKTOP_VIEWPORT_INJECTED_JS);
   return scripts.join('\n');
@@ -117,6 +118,9 @@ export default function BrowserTabsView({
                 source={{ uri: runningTabInstance.url }}
                 userAgent={isDesktopMode ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" : undefined}
                 scalesPageToFit={isDesktopMode}
+                allowsFullscreenVideo={true}
+                allowsInlineMediaPlayback={true}
+                mediaPlaybackRequiresUserAction={false}
                 // --- Anti external-redirect settings ---
                 // Forces window.open()/target="_blank" popups (the way most
                 // ad networks try to escape into the system browser) to

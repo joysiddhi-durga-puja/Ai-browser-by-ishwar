@@ -43,6 +43,7 @@ const ensureAiBrowserFolder = async () => {
 const storageLabelFromUri = (uri) => (/\/primary[%:]/.test(uri) ? 'AI Browser (Phone storage)' : 'AI Browser (SD card)');
 
 import { HOME_URL, GROQ_ENDPOINT, PAGE_QUESTION_SCAN_JS } from './constants';
+import { startBackgroundAudio, stopBackgroundAudio, setBackgroundAudioPlaying, subscribeToBackgroundAudioActions } from './BackgroundAudioBridge';
 import layoutStyles from './styles';
 import ViaIcon from './ViaIcon';
 
@@ -111,6 +112,24 @@ export default function App() {
   const slideAnimation = useRef(new Animated.Value(350)).current;
   const toastFadeAnim = useRef(new Animated.Value(0)).current;
   const webViewRefs = useRef({});
+  const activeTabIdRef = useRef(activeTabId);
+  useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
+
+  // Lockscreen/notification play-pause button has nothing of its own to
+  // control — forward it into the actual <video> element playing in the
+  // active tab's WebView.
+  useEffect(() => {
+    const unsubscribe = subscribeToBackgroundAudioActions((action) => {
+      const webViewRef = webViewRefs.current[activeTabIdRef.current];
+      if (!webViewRef) return;
+      if (action === 'pause') {
+        webViewRef.injectJavaScript("(function(){var v=document.querySelector('video'); if(v) v.pause();})(); true;");
+      } else if (action === 'play') {
+        webViewRef.injectJavaScript("(function(){var v=document.querySelector('video'); if(v) v.play();})(); true;");
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
   const isHomeActive = activeTab.url === HOME_URL;
@@ -547,6 +566,22 @@ export default function App() {
           autoAnswerPendingTabId.current = null;
           runAutoAnswerForTab(tabId, data.pageText || '');
         }
+      } else if (data.type === 'media-play-state') {
+        const tabForMedia = tabs.find(t => t.id === tabId);
+        const mediaTitle = (tabForMedia && tabForMedia.title) || 'AI Browser';
+        let mediaArtist = 'Playing in background';
+        try { mediaArtist = new URL(tabForMedia?.url || '').hostname || mediaArtist; } catch (e) {}
+        if (data.playing) {
+          startBackgroundAudio(mediaTitle, mediaArtist);
+        } else {
+          // Keep the lockscreen/notification session alive but flipped to
+          // "paused" rather than killing it outright — otherwise pressing
+          // pause on the lockscreen would make its own resume button
+          // vanish along with the notification.
+          setBackgroundAudioPlaying(false);
+        }
+      } else if (data.type === 'sponsor-segment-skipped') {
+        showBrowserToast("Sponsor Skipped");
       }
     } catch (e) { /* ignore malformed messages */ }
   };

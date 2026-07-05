@@ -13,7 +13,13 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#2A1B6B"
       },
-      "permissions": ["INTERNET"],
+      "permissions": [
+        "INTERNET",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "WAKE_LOCK",
+        "POST_NOTIFICATIONS"
+      ],
       "intentFilters": [
         {
           "action": "VIEW",
@@ -26,6 +32,7 @@
         }
       ]
     },
+    "plugins": ["./plugins/withBackgroundAudio.js"],
     "ios": {
       "bundleIdentifier": "com.iswar.aibrowser"
     }

@@ -46,21 +46,24 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
     ];
 
     // A JS .click() only fires a synthetic "click" event. Real buttons in
-    // YouTube's mobile ad player often react to pointerdown/up or
-    // touchstart/end instead, so a plain .click() can silently do nothing.
-    // Fire a full realistic event sequence to cover every case.
+    // YouTube's mobile ad player often react to pointerdown/up instead, so
+    // a plain .click() can silently do nothing. Fire a full realistic
+    // event sequence to cover every case.
     function fireFullClick(el) {
-      var rect = el.getBoundingClientRect();
-      var x = rect.left + rect.width / 2;
-      var y = rect.top + rect.height / 2;
-      var opts = { bubbles: true, cancelable: true, clientX: x, clientY: y };
-      ['pointerdown', 'mousedown', 'touchstart', 'pointerup', 'mouseup', 'touchend', 'click'].forEach(function(type) {
-        try {
-          var EventCtor = /^touch/.test(type) ? Event : (window.PointerEvent && /^pointer/.test(type) ? PointerEvent : MouseEvent);
-          el.dispatchEvent(new EventCtor(type, opts));
-        } catch (e) { /* ignore unsupported event types */ }
-      });
-      if (typeof el.click === 'function') el.click();
+      if (!el) return;
+      try {
+        var rect = el.getBoundingClientRect();
+        var x = rect.left + rect.width / 2;
+        var y = rect.top + rect.height / 2;
+        var opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y };
+        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function(type) {
+          try {
+            var EventCtor = (window.PointerEvent && /^pointer/.test(type)) ? PointerEvent : MouseEvent;
+            el.dispatchEvent(new EventCtor(type, opts));
+          } catch (e) { /* ignore unsupported event types */ }
+        });
+      } catch (e) { /* element may not be in a measurable state */ }
+      if (typeof el.click === 'function') { try { el.click(); } catch (e) {} }
     }
 
     // Given a matched element that merely *contains* the real control
@@ -68,14 +71,29 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
     function resolveClickable(el) {
       if (!el) return null;
       if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button') return el;
-      var inner = el.querySelector('button, a, [role="button"]');
+      var inner = el.querySelector && el.querySelector('button, a, [role="button"]');
       return inner || el;
+    }
+
+    // YouTube's mobile ad UI increasingly renders through web components
+    // (Polymer/Lit elements with an open shadow root). A plain
+    // querySelector on the document can never see inside those — this
+    // walks the light DOM and recurses into every open shadow root too.
+    function queryAllDeep(root, selector) {
+      var out = [];
+      try { out = Array.prototype.slice.call(root.querySelectorAll(selector)); } catch (e) {}
+      var all;
+      try { all = root.querySelectorAll('*'); } catch (e) { all = []; }
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].shadowRoot) out = out.concat(queryAllDeep(all[i].shadowRoot, selector));
+      }
+      return out;
     }
 
     function clickSkipIfPresent() {
       for (var i = 0; i < SKIP_SELECTORS.length; i++) {
         var btn = document.querySelector(SKIP_SELECTORS[i]);
-        if (btn && btn.offsetParent !== null) { fireFullClick(resolveClickable(btn)); return; }
+        if (btn && btn.offsetParent !== null) { fireFullClick(resolveClickable(btn)); return true; }
       }
       // Broader net for when YouTube tweaks its exact class names: any
       // element whose class or aria-label merely contains "skip" (and looks
@@ -85,24 +103,48 @@ export const YOUTUBE_AD_SKIP_INJECTED_JS = `
       if (player) {
         var loose = player.querySelectorAll('[class*="skip" i], [aria-label*="skip" i]');
         for (var k = 0; k < loose.length; k++) {
-          if (loose[k].offsetParent !== null) { fireFullClick(resolveClickable(loose[k])); return; }
+          if (loose[k].offsetParent !== null) { fireFullClick(resolveClickable(loose[k])); return true; }
         }
       }
-      // Last resort: any short "Skip..." text label anywhere on the page
-      // (covers "Skip", "Skip Ad", "Skip Ads", "Skip ►" with an icon glyph
-      // that doesn't show up as text at all).
+      // Next: any short "Skip..." text label anywhere on the page (covers
+      // "Skip", "Skip Ad", "Skip Ads", "Skip ►" with an icon glyph that
+      // doesn't show up as text at all).
       var candidates = document.querySelectorAll('button, [role="button"], span, div');
       for (var j = 0; j < candidates.length; j++) {
         var text = (candidates[j].innerText || '').trim().toLowerCase();
         if (text.indexOf('skip') === 0 && text.length < 20 && candidates[j].offsetParent !== null) {
           fireFullClick(resolveClickable(candidates[j]));
-          return;
+          return true;
         }
       }
+      // Last resort: pierce shadow DOM for web-component based skip
+      // buttons that never show up in a normal querySelector at all.
+      if (player) {
+        var deep = queryAllDeep(player, '[class*="skip" i], [aria-label*="skip" i], [role="button"]');
+        for (var d = 0; d < deep.length; d++) {
+          var dtext = (deep[d].innerText || deep[d].getAttribute('aria-label') || '').trim().toLowerCase();
+          if (dtext.indexOf('skip') === 0 || /skip/i.test(deep[d].className || '')) {
+            fireFullClick(resolveClickable(deep[d]));
+            return true;
+          }
+        }
+      }
+      return false;
     }
 
-    setInterval(clickSkipIfPresent, 300);
-    var adObserver = new MutationObserver(clickSkipIfPresent);
+    // Interval + MutationObserver both call this, so throttle to avoid
+    // hammering it on every tiny DOM change (captions, progress bar, etc
+    // mutate constantly during playback).
+    var lastCheckAt = 0;
+    function throttledCheck() {
+      var now = Date.now();
+      if (now - lastCheckAt < 250) return;
+      lastCheckAt = now;
+      clickSkipIfPresent();
+    }
+
+    setInterval(throttledCheck, 300);
+    var adObserver = new MutationObserver(throttledCheck);
     adObserver.observe(document.body, { childList: true, subtree: true });
   })();
   true;
@@ -189,6 +231,9 @@ export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
         var video = document.querySelector('video');
         if (video && activeSegmentEnd != null) video.currentTime = activeSegmentEnd;
         removeSkipButton();
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'sponsor-segment-skipped' }));
+        }
       }
       btn.addEventListener('touchstart', function(e) { e.stopPropagation(); }, { passive: false });
       btn.addEventListener('touchend', skipAction, { passive: false });
@@ -216,7 +261,42 @@ export const YOUTUBE_SPONSOR_SKIP_INJECTED_JS = `
   true;
 `;
 
-// Desktop mode swaps the user-agent but the page still renders at phone
+// ============================================================================
+// MEDIA PLAY-STATE DETECTION (for background play)
+// Watches any <video> element on the page and tells React Native (via
+// postMessage) whenever playback starts/stops/ends. React Native uses this
+// to start/stop the native foreground service that keeps audio playing
+// when the screen is off or the app is backgrounded. Works on any site with
+// HTML5 video, not just YouTube.
+// ============================================================================
+export const MEDIA_PLAY_STATE_INJECTED_JS = `
+  (function() {
+    if (window.__aiMediaPlayStateInstalled) { true; return; }
+    window.__aiMediaPlayStateInstalled = true;
+
+    function post(playing) {
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'media-play-state', playing: playing }));
+      }
+    }
+
+    function attach(video) {
+      if (video.__aiTracked) return;
+      video.__aiTracked = true;
+      video.addEventListener('play', function() { post(true); });
+      video.addEventListener('pause', function() { post(false); });
+      video.addEventListener('ended', function() { post(false); });
+    }
+
+    setInterval(function() {
+      var v = document.querySelector('video');
+      if (v) attach(v);
+    }, 1000);
+  })();
+  true;
+`;
+
+
 // viewport width — text/columns get clipped like a real desktop site
 // squeezed onto a phone. This forces a proper desktop-width viewport so
 // scalesPageToFit can zoom it out to fit the screen, same as Chrome's
